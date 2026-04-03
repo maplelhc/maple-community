@@ -1,0 +1,79 @@
+# 环境变量和敏感配置
+.env
+*.pem
+*.key
+*.crt
+
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+
+# 日志文件
+*.log
+*.pid
+*.lock
+grant.log
+restart.log
+tunnel.log
+serveo_*.log
+bore_*.log
+tunnel_watchdog.log
+
+# 数据库文件
+postgres_data/
+*.sql
+*.db
+
+# 系统和个人配置
+.bash_history
+.psql_history
+.python_history
+.gitconfig
+.lesshst
+.wget-hsts
+.cache/
+.cargo/
+.config/
+.cpan/
+.npm/
+.ollama/
+.termux/
+.ssh/
+.ssl/
+.local/
+
+# 工具和临时文件
+nikto/
+nikto-main.zip
+YunDns*
+phddns.deb
+cloudflared.log
+*.pid
+bore.pid
+current_bore_port
+storage/
+
+# 后端自动生成/临时文件
+backend_tunnel.log
+port_web.py.bak
+envs_url.txt
+goodlink
+ix_url.txt
+paste_url.txt
+serverchan_key.txt
+restart_tunnel.sh
+tunnel_monitor.sh
+tunnel_watchdog.sh
+check_services.sh
+keep_*.sh
+auto_*.sh
+backend_*.sh
+
+# 静态资源（如果你有上传的静态文件，保留 static/ 目录，但排除其中的敏感内容）
+static/pptist/node_modules/
+static/pptist/.env
+
+# 其他
+*.deb
+*.zip

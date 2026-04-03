@@ -1,0 +1,6 @@
+#!/data/data/com.termux/files/usr/bin/bash
+PORT_FILE="$HOME/current_bore_port"
+while true; do
+    { echo -ne "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n$(cat $PORT_FILE)"; } | nc -l -p 8084 -q 1
+done
+

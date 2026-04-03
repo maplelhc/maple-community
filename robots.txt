@@ -1,0 +1,6 @@
+User-agent: *
+Disallow: /admin/
+Disallow: /api/bank/
+Allow: /
+
+Sitemap: https://liuhuaichen.serveousercontent.com/sitemap.xml

@@ -1,0 +1,40 @@
+2026-02-27 12:21:52.771 CST [22007] LOG:  starting PostgreSQL 18.2 on aarch64-unknown-linux-android, compiled by Android (13989888, +pgo, +bolt, +lto, +mlgo, based on r563880c) clang version 21.0.0 (https://android.googlesource.com/toolchain/llvm-project 5e96669f06077099aa41290cdb4c5e6fa0f59349), 64-bit
+2026-02-27 12:21:52.771 CST [22007] LOG:  listening on IPv4 address "127.0.0.1", port 5432
+2026-02-27 12:21:52.773 CST [22007] LOG:  listening on Unix socket "/data/data/com.termux/files/usr/tmp/.s.PGSQL.5432"
+2026-02-27 12:21:52.783 CST [22017] LOG:  database system was interrupted; last known up at 2026-02-26 21:55:21 CST
+2026-02-27 12:21:53.075 CST [22017] LOG:  database system was not properly shut down; automatic recovery in progress
+2026-02-27 12:21:53.078 CST [22017] LOG:  redo starts at 0/1D268B8
+2026-02-27 12:21:53.078 CST [22017] LOG:  invalid record length at 0/1D269C0: expected at least 24, got 0
+2026-02-27 12:21:53.078 CST [22017] LOG:  redo done at 0/1D26988 system usage: CPU: user: 0.00 s, system: 0.00 s, elapsed: 0.00 s
+2026-02-27 12:21:53.084 CST [22013] LOG:  checkpoint starting: end-of-recovery immediate wait
+2026-02-27 12:21:53.091 CST [22013] LOG:  checkpoint complete: wrote 0 buffers (0.0%), wrote 3 SLRU buffers; 0 WAL file(s) added, 0 removed, 0 recycled; write=0.001 s, sync=0.001 s, total=0.008 s; sync files=2, longest=0.001 s, average=0.001 s; distance=0 kB, estimate=0 kB; lsn=0/1D269C0, redo lsn=0/1D269C0
+2026-02-27 12:21:53.094 CST [22007] LOG:  database system is ready to accept connections
+2026-02-27 12:31:53.218 CST [22013] LOG:  checkpoint starting: time
+2026-02-27 12:31:53.351 CST [22013] LOG:  checkpoint complete: wrote 1 buffers (0.0%), wrote 0 SLRU buffers; 0 WAL file(s) added, 0 removed, 0 recycled; write=0.103 s, sync=0.002 s, total=0.133 s; sync files=1, longest=0.002 s, average=0.002 s; distance=7 kB, estimate=7 kB; lsn=0/1D28748, redo lsn=0/1D286F0
+2026-02-27 12:32:02.762 CST [28920] FATAL:  lock file "postmaster.pid" already exists
+2026-02-27 12:32:02.762 CST [28920] HINT:  Is another postmaster (PID 22007) running in data directory "/data/data/com.termux/files/home/postgres_data"?
+2026-02-27 14:53:14.296 CST [10178] LOG:  starting PostgreSQL 18.2 on aarch64-unknown-linux-android, compiled by Android (13989888, +pgo, +bolt, +lto, +mlgo, based on r563880c) clang version 21.0.0 (https://android.googlesource.com/toolchain/llvm-project 5e96669f06077099aa41290cdb4c5e6fa0f59349), 64-bit
+2026-02-27 14:53:14.297 CST [10178] LOG:  listening on IPv4 address "127.0.0.1", port 5432
+2026-02-27 14:53:14.298 CST [10178] LOG:  listening on Unix socket "/data/data/com.termux/files/usr/tmp/.s.PGSQL.5432"
+2026-02-27 14:53:14.328 CST [10186] LOG:  database system was interrupted; last known up at 2026-02-27 12:31:53 CST
+2026-02-27 14:53:14.399 CST [10186] LOG:  database system was not properly shut down; automatic recovery in progress
+2026-02-27 14:53:14.402 CST [10186] LOG:  redo starts at 0/1D286F0
+2026-02-27 14:53:14.402 CST [10186] LOG:  invalid record length at 0/1D287F8: expected at least 24, got 0
+2026-02-27 14:53:14.402 CST [10186] LOG:  redo done at 0/1D287C0 system usage: CPU: user: 0.00 s, system: 0.00 s, elapsed: 0.00 s
+2026-02-27 14:53:14.408 CST [10184] LOG:  checkpoint starting: end-of-recovery immediate wait
+2026-02-27 14:53:14.418 CST [10184] LOG:  checkpoint complete: wrote 0 buffers (0.0%), wrote 3 SLRU buffers; 0 WAL file(s) added, 0 removed, 0 recycled; write=0.001 s, sync=0.001 s, total=0.011 s; sync files=2, longest=0.001 s, average=0.001 s; distance=0 kB, estimate=0 kB; lsn=0/1D287F8, redo lsn=0/1D287F8
+2026-02-27 14:53:14.420 CST [10178] LOG:  database system is ready to accept connections
+2026-02-27 14:54:59.548 CST [11006] ERROR:  syntax error at or near "mypassword" at character 1
+2026-02-27 14:54:59.548 CST [11006] STATEMENT:  mypassword
+	SELECT username, password FROM users;
+2026-02-27 15:12:44.332 CST [25438] ERROR:  syntax error at or near "mypassword" at character 1
+2026-02-27 15:12:44.332 CST [25438] STATEMENT:  mypassword
+	SELECT username, password FROM users;
+2026-02-27 15:13:14.640 CST [10184] LOG:  checkpoint starting: time
+2026-02-27 15:13:14.781 CST [10184] LOG:  checkpoint complete: wrote 1 buffers (0.0%), wrote 1 SLRU buffers; 0 WAL file(s) added, 0 removed, 0 recycled; write=0.104 s, sync=0.004 s, total=0.142 s; sync files=2, longest=0.003 s, average=0.002 s; distance=3 kB, estimate=3 kB; lsn=0/1D295B0, redo lsn=0/1D29558
+2026-02-28 15:38:36.966 CST [10184] LOG:  checkpoint starting: time
+2026-02-28 15:38:37.432 CST [10184] LOG:  checkpoint complete: wrote 4 buffers (0.0%), wrote 1 SLRU buffers; 0 WAL file(s) added, 0 removed, 0 recycled; write=0.426 s, sync=0.005 s, total=0.471 s; sync files=5, longest=0.003 s, average=0.001 s; distance=4 kB, estimate=4 kB; lsn=0/1D2A5E0, redo lsn=0/1D2A588
+2026-02-28 16:48:37.651 CST [10184] LOG:  checkpoint starting: time
+2026-02-28 16:48:37.813 CST [10184] LOG:  checkpoint complete: wrote 1 buffers (0.0%), wrote 1 SLRU buffers; 0 WAL file(s) added, 0 removed, 0 recycled; write=0.131 s, sync=0.003 s, total=0.166 s; sync files=2, longest=0.003 s, average=0.002 s; distance=4 kB, estimate=4 kB; lsn=0/1D2B758, redo lsn=0/1D2B700
+2026-02-28 16:53:37.911 CST [10184] LOG:  checkpoint starting: time
+2026-02-28 16:53:38.033 CST [10184] LOG:  checkpoint complete: wrote 1 buffers (0.0%), wrote 0 SLRU buffers; 0 WAL file(s) added, 0 removed, 0 recycled; write=0.102 s, sync=0.003 s, total=0.122 s; sync files=1, longest=0.003 s, average=0.003 s; distance=5 kB, estimate=5 kB; lsn=0/1D2CBD0, redo lsn=0/1D2CB78
