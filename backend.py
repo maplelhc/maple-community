@@ -1648,4 +1648,4 @@ def serve_frontend():
     return send_from_directory('.', 'maple.html')
 
 if __name__ == '__main__':
-    socketio.run(app, host='0.0.0.0', port=8083, debug=True)
+    socketio.run(app, host='0.0.0.0', port=int(os.environ.get("PORT", 8083)), debug=False)
