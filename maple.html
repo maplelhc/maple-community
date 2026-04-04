@@ -260,11 +260,16 @@
     let chatConnected = false;
 
     // ========== 通用工具函数 ==========
+    // 修改点：添加 credentials: 'include' 确保携带 cookie
     async function apiFetch(url, options = {}, adminPwd = null) {
         try {
             const headers = { 'Content-Type': 'application/json' };
             if (adminPwd) headers['Admin-Password'] = adminPwd;
-            const res = await fetch(API_BASE + url, { ...options, headers });
+            const res = await fetch(API_BASE + url, { 
+                ...options, 
+                headers,
+                credentials: 'include'   // 关键：携带 session cookie
+            });
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             return await res.json();
         } catch(err) { console.error('API请求失败:', err); return { success: false, error: err.message }; }
@@ -313,10 +318,12 @@
         if (container) container.innerHTML = `<div class="auth-form"><h2>🍁 登录枫叶社区</h2><input type="text" id="login-username" placeholder="用户名"><input type="password" id="login-password" placeholder="密码"><button id="login-btn">登 录</button></div>`;
         const btn = document.getElementById('login-btn'); if (btn) btn.addEventListener('click', handleLogin);
     }
+    // 修改点：Socket.IO 连接添加 withCredentials: true
     function initChatSocket() {
         if (chatSocket && chatConnected) return;
         if (chatSocket) chatSocket.disconnect();
         chatSocket = io({
+            withCredentials: true,   // 确保携带 cookie
             reconnection: true,
             reconnectionAttempts: 5,
             reconnectionDelay: 1000,

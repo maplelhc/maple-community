@@ -6,7 +6,7 @@ from flask import Flask, request, jsonify, send_from_directory, session, Respons
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit
 from werkzeug.security import generate_password_hash, check_password_hash
-from werkzeug.middleware.proxy_fix import ProxyFix   # 新增
+from werkzeug.middleware.proxy_fix import ProxyFix
 import psycopg2
 import psycopg2.extras
 import psycopg2.pool
@@ -1452,6 +1452,53 @@ def bank_raffle():
 # 创建 SocketIO 实例（不依赖终端环境变量，确保聊天室等功能可用）
 socketio = SocketIO(app, cors_allowed_origins="*", manage_session=True)
 
+# ========== WebSocket 聊天室 ==========
+online_users = set()
+
+@socketio.on('chat_join')
+def handle_chat_join():
+    username = session.get('username')
+    if not username:
+        emit('error', {'msg': '未登录'})
+        return
+    online_users.add(username)
+    print(f"[CHAT] {username} 加入聊天室，当前在线: {len(online_users)}")
+
+@socketio.on('chat_send')
+def handle_chat_send(data):
+    username = session.get('username')
+    if not username:
+        emit('error', {'msg': '未登录'})
+        return
+    nickname = data.get('nickname', username)
+    content = data.get('content', '').strip()
+    if not content:
+        emit('error', {'msg': '消息不能为空'})
+        return
+
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO messages (username, nickname, content) VALUES (%s, %s, %s)",
+            (username, nickname, content)
+        )
+        conn.commit()
+
+    msg = {
+        'username': username,
+        'nickname': nickname,
+        'content': content,
+        'time': datetime.datetime.now().isoformat()
+    }
+    emit('chat_message', msg, broadcast=True)
+
+@socketio.on('chat_leave')
+def handle_chat_leave():
+    username = session.get('username')
+    if username:
+        online_users.discard(username)
+        print(f"[CHAT] {username} 离开聊天室，当前在线: {len(online_users)}")
+
 # ========== WebSocket 数据库终端（依赖环境变量）==========
 if MAPLE_TERMINAL_PASSWORD and TERMINAL_PASSWORD_NORMAL and TERMINAL_PASSWORD_SUPER:
     processes = {}
@@ -1594,53 +1641,6 @@ if MAPLE_TERMINAL_PASSWORD and TERMINAL_PASSWORD_NORMAL and TERMINAL_PASSWORD_SU
 else:
     print("数据库终端功能未启用，请设置所需的环境变量 (MAPLE_TERMINAL_PASSWORD, TERMINAL_PASSWORD_NORMAL, TERMINAL_PASSWORD_SUPER)")
 
-# ========== WebSocket 聊天室 ==========
-online_users = set()
-
-@socketio.on('chat_join')
-def handle_chat_join():
-    username = session.get('username')
-    if not username:
-        emit('error', {'msg': '未登录'})
-        return
-    online_users.add(username)
-    print(f"[CHAT] {username} 加入聊天室，当前在线: {len(online_users)}")
-
-@socketio.on('chat_send')
-def handle_chat_send(data):
-    username = session.get('username')
-    if not username:
-        emit('error', {'msg': '未登录'})
-        return
-    nickname = data.get('nickname', username)
-    content = data.get('content', '').strip()
-    if not content:
-        emit('error', {'msg': '消息不能为空'})
-        return
-
-    with get_db_connection() as conn:
-        cur = conn.cursor()
-        cur.execute(
-            "INSERT INTO messages (username, nickname, content) VALUES (%s, %s, %s)",
-            (username, nickname, content)
-        )
-        conn.commit()
-
-    msg = {
-        'username': username,
-        'nickname': nickname,
-        'content': content,
-        'time': datetime.datetime.now().isoformat()
-    }
-    emit('chat_message', msg, broadcast=True)
-
-@socketio.on('chat_leave')
-def handle_chat_leave():
-    username = session.get('username')
-    if username:
-        online_users.discard(username)
-        print(f"[CHAT] {username} 离开聊天室，当前在线: {len(online_users)}")
-
 # ---------- 前端入口 ----------
 @app.route('/maple.html')
 def serve_frontend():
@@ -1648,4 +1648,4 @@ def serve_frontend():
     return send_from_directory('.', 'maple.html')
 
 if __name__ == '__main__':
-    socketio.run(app, host='0.0.0.0', port=int(os.environ.get("PORT", 8083)), debug=False)
+    socketio.run(app, host='0.0.0.0', port=8083, debug=True)
