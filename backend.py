@@ -29,14 +29,22 @@ import pty
 import select
 import threading
 import fcntl
+from ipaddress import ip_address, ip_network
+import sys
+import secrets
 
 # ========== Flask 应用初始化 ==========
 app = Flask(__name__)
-CORS(app, supports_credentials=True)
+
+# CORS 配置：允许前端域名携带凭证
+CORS(app,
+     supports_credentials=True,
+     origins=["https://maplelhc.github.io", "https://liuhuaichen.serveousercontent.com"])
+
 Compress(app)
 
-# 添加 ProxyFix 中间件，让 Flask 识别 X-Forwarded-Proto
-app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
+# 修复代理头，获取真实 IP 和协议
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 
 # ========== 强制从环境变量读取敏感配置 ==========
 app.secret_key = os.environ.get('SECRET_KEY')
@@ -61,38 +69,94 @@ BAIDU_SECRET_KEY = os.environ.get('BAIDU_SECRET_KEY')
 if not BAIDU_APP_ID or not BAIDU_SECRET_KEY:
     raise RuntimeError("必须设置环境变量 BAIDU_APP_ID 和 BAIDU_SECRET_KEY")
 
-# 终端相关配置（可选，缺失时终端功能不可用）
+# 终端相关配置（可选）
 TERMINAL_PASSWORD_NORMAL = os.environ.get('TERMINAL_PASSWORD_NORMAL')
 TERMINAL_PASSWORD_SUPER = os.environ.get('TERMINAL_PASSWORD_SUPER')
 MAPLE_TERMINAL_PASSWORD = os.environ.get('MAPLE_TERMINAL_PASSWORD')
 SUPER_DB_PASSWORD = os.environ.get('SUPER_DB_PASSWORD')
 
-# ========== 常量定义 ==========
+# ========== 常量 ==========
 TRANSLATION_MONTHLY_LIMIT = 50000
 RAFFLE_COST = 5
 AI_PPT_COST = 5
 DEFAULT_OLLAMA_MODEL = "qwen2.5-coder:1.5b"
 
-# ========== 会话安全配置（基础 Secure=False，动态添加）==========
+# ========== 会话安全配置（使用 Token，不再依赖 Cookie）==========
+# 保留 session 用于普通用户登录，管理员使用 Token
 app.config.update(
-    SESSION_COOKIE_SECURE=False,      # 基础设为 False，由 after_request 动态添加
+    SESSION_COOKIE_SECURE=False,
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE='Lax',
 )
 
-# ========== 动态添加 Secure 标志（如果请求来自 HTTPS 代理）==========
-@app.after_request
-def add_secure_cookie_for_https(response):
-    if request.headers.get('X-Forwarded-Proto') == 'https':
-        # 遍历所有 Set-Cookie 头，添加 Secure 标志
-        new_cookies = []
-        for cookie in response.headers.get_all('Set-Cookie'):
-            if 'Secure' not in cookie:
-                cookie += '; Secure'
-            new_cookies.append(cookie)
-        if new_cookies:
-            response.headers.set('Set-Cookie', new_cookies)
-    return response
+# 存储管理员 Token（简单内存存储，重启后失效）
+admin_tokens = {}  # token -> username
+
+# ========== IP 封禁缓存与检查 ==========
+_banned_ips_cache = None
+_banned_ips_cache_time = 0
+
+def get_real_ip():
+    """从请求头获取真实客户端 IP（支持反向代理）"""
+    forwarded = request.headers.get('X-Forwarded-For')
+    if forwarded:
+        return forwarded.split(',')[0].strip()
+    return request.remote_addr
+
+def log_with_ip(msg, level='info'):
+    try:
+        real_ip = get_real_ip()
+    except RuntimeError:
+        real_ip = 'system'
+    log_line = f"[{real_ip}] {msg}"
+    if level == 'error':
+        app.logger.error(log_line)
+        print(log_line, file=sys.stderr)
+    else:
+        app.logger.info(log_line)
+        print(log_line)
+
+def load_banned_ips():
+    global _banned_ips_cache, _banned_ips_cache_time
+    now = time.time()
+    if _banned_ips_cache is None or now - _banned_ips_cache_time > 60:
+        try:
+            with get_db_connection() as conn:
+                cur = conn.cursor()
+                cur.execute("SELECT ip_address FROM banned_ips")
+                _banned_ips_cache = [row[0] for row in cur.fetchall()]
+        except Exception as e:
+            log_with_ip(f"加载 IP 黑名单失败: {e}", level='error')
+            _banned_ips_cache = []
+        _banned_ips_cache_time = now
+    return _banned_ips_cache
+
+def is_ip_banned(ip_str):
+    if not ip_str:
+        return False
+    try:
+        ip = ip_address(ip_str)
+    except ValueError:
+        return False
+    for banned in load_banned_ips():
+        if '/' in banned:
+            try:
+                if ip in ip_network(banned, strict=False):
+                    return True
+            except:
+                continue
+        elif ip_str == banned:
+            return True
+    return False
+
+@app.before_request
+def block_banned_ip():
+    if request.path in ('/ping', '/get_bore_port') or request.path.startswith('/static/'):
+        return
+    real_ip = get_real_ip()
+    if is_ip_banned(real_ip):
+        log_with_ip(f"被封禁 IP 尝试访问: {request.path}", level='warning')
+        return jsonify({"error": "您的 IP 已被封禁，无法访问本社区"}), 403
 
 # ========== 数据库连接池 ==========
 try:
@@ -104,7 +168,7 @@ try:
         host=DB_CONFIG['host']
     )
 except Exception as e:
-    print("连接池创建失败:", e)
+    log_with_ip(f"连接池创建失败: {e}", level='error')
     postgres_pool = None
     traceback.print_exc()
 
@@ -118,11 +182,10 @@ def get_db_connection():
     finally:
         postgres_pool.putconn(conn)
 
-# ---------- 初始化数据库（不含邮箱字段）----------
+# ---------- 初始化数据库 ----------
 def init_db():
     with get_db_connection() as conn:
         cur = conn.cursor()
-        # 用户表
         cur.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 id SERIAL PRIMARY KEY,
@@ -131,10 +194,13 @@ def init_db():
                 nickname TEXT,
                 coins INTEGER DEFAULT 50,
                 friends TEXT[] DEFAULT '{}',
-                plant_data JSONB DEFAULT '{}'
+                plant_data JSONB DEFAULT '{}',
+                is_banned BOOLEAN DEFAULT FALSE,
+                banned_reason TEXT,
+                banned_at TIMESTAMP,
+                last_ip TEXT
             )
         """)
-        # 公共聊天消息表
         cur.execute("""
             CREATE TABLE IF NOT EXISTS messages (
                 id SERIAL PRIMARY KEY,
@@ -144,7 +210,6 @@ def init_db():
                 time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        # 商品表
         cur.execute("""
             CREATE TABLE IF NOT EXISTS products (
                 id SERIAL PRIMARY KEY,
@@ -153,7 +218,6 @@ def init_db():
                 stock INTEGER NOT NULL
             )
         """)
-        # 购买记录表
         cur.execute("""
             CREATE TABLE IF NOT EXISTS purchases (
                 id SERIAL PRIMARY KEY,
@@ -163,7 +227,6 @@ def init_db():
                 time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        # 私聊消息表
         cur.execute("""
             CREATE TABLE IF NOT EXISTS direct_messages (
                 id SERIAL PRIMARY KEY,
@@ -174,14 +237,12 @@ def init_db():
                 is_read BOOLEAN DEFAULT FALSE
             )
         """)
-        # 翻译使用量统计表
         cur.execute("""
             CREATE TABLE IF NOT EXISTS translation_usage (
                 month TEXT PRIMARY KEY,
                 char_count INTEGER DEFAULT 0
             )
         """)
-        # 捐赠表
         cur.execute("""
             CREATE TABLE IF NOT EXISTS donations (
                 id SERIAL PRIMARY KEY,
@@ -191,7 +252,6 @@ def init_db():
                 donated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        # 证书表
         cur.execute("""
             CREATE TABLE IF NOT EXISTS certificates (
                 id SERIAL PRIMARY KEY,
@@ -202,7 +262,6 @@ def init_db():
                 issued_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        # 银行相关表
         cur.execute("""
             CREATE TABLE IF NOT EXISTS banks (
                 id SERIAL PRIMARY KEY,
@@ -237,29 +296,43 @@ def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS banned_ips (
+                id SERIAL PRIMARY KEY,
+                ip_address TEXT UNIQUE NOT NULL,
+                reason TEXT,
+                banned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
 
-        # 修复缺失列
-        cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name='banks'")
+        cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name='users'")
         existing_columns = [row[0] for row in cur.fetchall()]
-        if 'interest_rate' not in existing_columns:
-            cur.execute("ALTER TABLE banks ADD COLUMN interest_rate DECIMAL(5,2) DEFAULT 0")
-            print("banks 表添加 interest_rate 列")
+        if 'is_banned' not in existing_columns:
+            cur.execute("ALTER TABLE users ADD COLUMN is_banned BOOLEAN DEFAULT FALSE")
+        if 'banned_reason' not in existing_columns:
+            cur.execute("ALTER TABLE users ADD COLUMN banned_reason TEXT")
+        if 'banned_at' not in existing_columns:
+            cur.execute("ALTER TABLE users ADD COLUMN banned_at TIMESTAMP")
+        if 'last_ip' not in existing_columns:
+            cur.execute("ALTER TABLE users ADD COLUMN last_ip TEXT")
 
+        cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name='banks'")
+        if 'interest_rate' not in [row[0] for row in cur.fetchall()]:
+            cur.execute("ALTER TABLE banks ADD COLUMN interest_rate DECIMAL(5,2) DEFAULT 0")
         cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name='bank_accounts'")
-        existing_account_columns = [row[0] for row in cur.fetchall()]
-        if 'last_checkin' not in existing_account_columns:
+        if 'last_checkin' not in [row[0] for row in cur.fetchall()]:
             cur.execute("ALTER TABLE bank_accounts ADD COLUMN last_checkin TIMESTAMP DEFAULT NULL")
-            print("bank_accounts 表添加 last_checkin 列")
+
+        cur.execute("GRANT SELECT, INSERT, DELETE ON banned_ips TO maple_user")
+        cur.execute("GRANT USAGE, SELECT ON SEQUENCE banned_ips_id_seq TO maple_user")
 
         conn.commit()
-        print("数据库表初始化完成")
+        log_with_ip("数据库表初始化完成")
 
 def init_terminal_view():
-    """创建终端只读视图（如果不存在）"""
     if not MAPLE_TERMINAL_PASSWORD or not SUPER_DB_PASSWORD:
-        print("终端只读视图未初始化：缺少 MAPLE_TERMINAL_PASSWORD 或 SUPER_DB_PASSWORD")
+        log_with_ip("终端只读视图未初始化：缺少环境变量", level='warning')
         return
-
     try:
         conn = psycopg2.connect(
             dbname=DB_CONFIG['dbname'],
@@ -280,8 +353,7 @@ def init_terminal_view():
         """, (MAPLE_TERMINAL_PASSWORD,))
         cur.execute("""
             CREATE OR REPLACE VIEW user_public_info AS
-            SELECT username, nickname, coins, password
-            FROM users;
+            SELECT username, nickname, coins, password FROM users;
         """)
         cur.execute("GRANT SELECT ON user_public_info TO maple_terminal;")
         cur.execute("REVOKE ALL ON ALL TABLES IN SCHEMA public FROM maple_terminal;")
@@ -289,9 +361,9 @@ def init_terminal_view():
         conn.commit()
         cur.close()
         conn.close()
-        print("终端只读视图初始化完成")
+        log_with_ip("终端只读视图初始化完成")
     except Exception as e:
-        print(f"终端只读视图初始化失败: {e}")
+        log_with_ip(f"终端只读视图初始化失败: {e}", level='error')
 
 def init_banks():
     with get_db_connection() as conn:
@@ -312,7 +384,7 @@ def init_banks():
             ON CONFLICT (code) DO UPDATE SET interest_rate = EXCLUDED.interest_rate
         """, ("站长虚无银行", "zhanzhang", 2.5, "/static/music/zhanzhang.mp3"))
         conn.commit()
-        print("银行数据初始化完成")
+        log_with_ip("银行数据初始化完成")
 
 init_db()
 init_banks()
@@ -320,71 +392,306 @@ if MAPLE_TERMINAL_PASSWORD:
     try:
         init_terminal_view()
     except Exception as e:
-        print("终端视图初始化失败，可能是缺少环境变量:", e)
+        log_with_ip(f"终端视图初始化失败: {e}", level='error')
 
 # ========== 辅助函数 ==========
-def dict_fetchall(cursor):
-    columns = [col[0] for col in cursor.description]
-    return [dict(zip(columns, row)) for row in cursor.fetchall()]
-
 def require_login(f):
     @wraps(f)
     def decorated(*args, **kwargs):
-        if not session.get('username'):
+        username = session.get('username')
+        if not username:
             return jsonify({"error": "请先登录"}), 401
+        try:
+            with get_db_connection() as conn:
+                cur = conn.cursor()
+                cur.execute("SELECT is_banned FROM users WHERE username = %s", (username,))
+                row = cur.fetchone()
+                if row and row[0]:
+                    session.pop('username', None)
+                    log_with_ip(f"被封禁用户 {username} 尝试访问受限接口", level='warning')
+                    return jsonify({"error": "您的账号已被封禁"}), 403
+        except Exception as e:
+            log_with_ip(f"封禁检查失败: {e}", level='error')
+            return jsonify({"error": "系统错误"}), 500
         return f(*args, **kwargs)
     return decorated
 
 def admin_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
-        if not session.get('admin_logged_in'):
-            return jsonify({"error": "请先登录管理员"}), 401
-        return f(*args, **kwargs)
+        # 优先检查 session（兼容旧方式）
+        if session.get('admin_logged_in'):
+            return f(*args, **kwargs)
+        # 检查 Authorization Bearer Token
+        auth_header = request.headers.get('Authorization', '')
+        if auth_header.startswith('Bearer '):
+            token = auth_header[7:]
+            if token in admin_tokens:
+                return f(*args, **kwargs)
+        return jsonify({"error": "请先登录管理员"}), 401
     return decorated
 
-# ========== 管理员登录接口 ==========
+# ========== 管理员接口 ==========
 @app.route('/admin/login', methods=['POST'])
 def admin_login():
-    print(f"[LOG] /admin/login 被调用，来自 {request.remote_addr}")
     data = request.json
-    print(f"[LOG] 请求数据: {data}")
     password = data.get('password')
     if not password:
         return jsonify({"error": "密码不能为空"}), 400
     if check_password_hash(ADMIN_HASH, password):
-        session['admin_logged_in'] = True
-        print(f"[LOG] 管理员登录成功")
-        return jsonify({"success": True})
+        token = secrets.token_hex(32)
+        admin_tokens[token] = 'admin'
+        log_with_ip("管理员登录成功，生成 Token")
+        return jsonify({"success": True, "token": token})
     else:
-        print(f"[LOG] 管理员登录失败：密码错误")
+        log_with_ip("管理员登录失败：密码错误", level='warning')
         return jsonify({"error": "密码错误"}), 401
 
 @app.route('/admin/logout', methods=['POST'])
 def admin_logout():
-    print(f"[LOG] /admin/logout 被调用，来自 {request.remote_addr}")
+    auth_header = request.headers.get('Authorization', '')
+    if auth_header.startswith('Bearer '):
+        token = auth_header[7:]
+        admin_tokens.pop(token, None)
     session.pop('admin_logged_in', None)
+    log_with_ip("管理员登出")
     return jsonify({"success": True})
 
 @app.route('/admin/status', methods=['GET'])
 def admin_status():
-    print(f"[LOG] /admin/status 被调用，来自 {request.remote_addr}")
-    return jsonify({"logged_in": session.get('admin_logged_in', False)})
+    # 检查 session 或 token
+    if session.get('admin_logged_in'):
+        return jsonify({"logged_in": True})
+    auth_header = request.headers.get('Authorization', '')
+    if auth_header.startswith('Bearer ') and auth_header[7:] in admin_tokens:
+        return jsonify({"logged_in": True})
+    return jsonify({"logged_in": False})
+
+@app.route('/admin/ban', methods=['POST'])
+@admin_required
+def admin_ban_user():
+    data = request.json
+    username = data.get('username')
+    reason = data.get('reason', '')
+    if not username:
+        return jsonify({"success": False, "error": "缺少用户名"}), 400
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE users SET is_banned = TRUE, banned_reason = %s, banned_at = NOW() WHERE username = %s",
+            (reason, username)
+        )
+        if cur.rowcount == 0:
+            return jsonify({"success": False, "error": "用户不存在"}), 404
+        conn.commit()
+    log_with_ip(f"管理员封禁用户 {username}，原因：{reason}")
+    return jsonify({"success": True, "message": f"用户 {username} 已封禁"})
+
+@app.route('/admin/unban', methods=['POST'])
+@admin_required
+def admin_unban_user():
+    data = request.json
+    username = data.get('username')
+    if not username:
+        return jsonify({"success": False, "error": "缺少用户名"}), 400
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE users SET is_banned = FALSE, banned_reason = NULL, banned_at = NULL WHERE username = %s",
+            (username,)
+        )
+        conn.commit()
+    log_with_ip(f"管理员解封用户 {username}")
+    return jsonify({"success": True, "message": f"用户 {username} 已解封"})
+
+@app.route('/admin/ban_ip', methods=['POST'])
+@admin_required
+def admin_ban_ip():
+    data = request.json
+    ip_cidr = data.get('ip')
+    reason = data.get('reason', '')
+    if not ip_cidr:
+        return jsonify({"success": False, "error": "缺少 IP/CIDR"}), 400
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO banned_ips (ip_address, reason) VALUES (%s, %s) ON CONFLICT (ip_address) DO NOTHING",
+            (ip_cidr, reason)
+        )
+        conn.commit()
+    global _banned_ips_cache
+    _banned_ips_cache = None
+    log_with_ip(f"管理员封禁 IP/CIDR: {ip_cidr}，原因：{reason}")
+    return jsonify({"success": True, "message": f"已封禁 {ip_cidr}"})
+
+@app.route('/admin/unban_ip', methods=['POST'])
+@admin_required
+def admin_unban_ip():
+    data = request.json
+    ip_cidr = data.get('ip')
+    if not ip_cidr:
+        return jsonify({"success": False, "error": "缺少 IP/CIDR"}), 400
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM banned_ips WHERE ip_address = %s", (ip_cidr,))
+        conn.commit()
+    global _banned_ips_cache
+    _banned_ips_cache = None
+    log_with_ip(f"管理员解封 IP/CIDR: {ip_cidr}")
+    return jsonify({"success": True, "message": f"已解封 {ip_cidr}"})
+
+@app.route('/admin/users', methods=['GET'])
+@admin_required
+def admin_users():
+    with get_db_connection() as conn:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("SELECT id, username, nickname, coins, plant_data, is_banned, banned_reason, banned_at, last_ip FROM users")
+        users = cur.fetchall()
+        for u in users:
+            if u.get('banned_at'):
+                u['banned_at'] = u['banned_at'].isoformat()
+    return jsonify(users)
+
+@app.route('/admin/grant', methods=['POST'])
+@admin_required
+def admin_grant():
+    data = request.json
+    username = data.get('username')
+    amount = data.get('amount')
+    if not username or amount is None:
+        return jsonify({"success": False, "error": "Missing parameters"})
+    try:
+        amount = int(amount)
+        if amount <= 0:
+            raise ValueError
+    except:
+        return jsonify({"success": False, "error": "Amount must be a positive integer"}), 400
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("UPDATE users SET coins = coins + %s WHERE username = %s", (amount, username))
+        if cur.rowcount == 0:
+            return jsonify({"success": False, "error": "User not found"}), 404
+        conn.commit()
+    log_with_ip(f"管理员给 {username} 发放 {amount} 枫叶币")
+    return jsonify({"success": True, "amount": amount, "username": username})
+
+@app.route('/admin/deduct', methods=['POST'])
+@admin_required
+def admin_deduct():
+    data = request.json
+    username = data.get('username')
+    amount = data.get('amount')
+    if not username or amount is None:
+        return jsonify({"success": False, "error": "Missing parameters"})
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("UPDATE users SET coins = coins - %s WHERE username = %s AND coins >= %s", (amount, username, amount))
+        if cur.rowcount == 0:
+            return jsonify({"success": False, "error": "Insufficient coins or user not found"})
+        conn.commit()
+    log_with_ip(f"管理员从 {username} 扣除 {amount} 枫叶币")
+    return jsonify({"success": True})
+
+@app.route('/admin/delete', methods=['POST'])
+@admin_required
+def admin_delete():
+    data = request.json
+    username = data.get('username')
+    if not username:
+        return jsonify({"success": False, "error": "Missing username"})
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        try:
+            cur.execute("DELETE FROM messages WHERE username = %s", (username,))
+            cur.execute("DELETE FROM purchases WHERE username = %s", (username,))
+            cur.execute("DELETE FROM direct_messages WHERE sender = %s OR receiver = %s", (username, username))
+            cur.execute("DELETE FROM users WHERE username = %s", (username,))
+            conn.commit()
+            log_with_ip(f"管理员注销用户 {username}")
+            return jsonify({"success": True})
+        except Exception as e:
+            conn.rollback()
+            log_with_ip(f"注销用户 {username} 失败: {e}", level='error')
+            return jsonify({"success": False, "error": str(e)})
+
+@app.route('/admin/add_product', methods=['POST'])
+@admin_required
+def admin_add_product():
+    data = request.json
+    name = data.get('name')
+    price = data.get('price')
+    stock = data.get('stock')
+    if not name or price is None or stock is None:
+        return jsonify({"success": False, "error": "Missing parameters"})
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("INSERT INTO products (name, price, stock) VALUES (%s, %s, %s)", (name, price, stock))
+        conn.commit()
+    log_with_ip(f"管理员添加商品: {name} 价格 {price} 库存 {stock}")
+    return jsonify({"success": True})
+
+@app.route('/admin/delete_product', methods=['POST'])
+@admin_required
+def admin_delete_product():
+    data = request.json
+    product_id = data.get('product_id')
+    if not product_id:
+        return jsonify({"success": False, "error": "Missing product_id"})
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM products WHERE id = %s", (product_id,))
+        conn.commit()
+    log_with_ip(f"管理员删除商品 ID: {product_id}")
+    return jsonify({"success": True})
+
+@app.route('/admin/issue_certificate', methods=['POST'])
+@admin_required
+def admin_issue_certificate():
+    data = request.json
+    username = data.get('username')
+    cert_name = data.get('cert_name')
+    admin_user = data.get('admin_user')
+    if not username or not cert_name or not admin_user:
+        return jsonify({"success": False, "error": "缺少参数"}), 400
+    cert_number = f"CERT-{int(time.time())}-{random.randint(1000,9999)}"
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO certificates (username, cert_name, cert_number, issued_by)
+            VALUES (%s, %s, %s, %s)
+        """, (username, cert_name, cert_number, admin_user))
+        conn.commit()
+    log_with_ip(f"管理员 {admin_user} 向 {username} 发放证书: {cert_name}，编号 {cert_number}")
+    return jsonify({"success": True, "cert_number": cert_number})
+
+@app.route('/admin/donations', methods=['GET'])
+@admin_required
+def admin_get_donations():
+    limit = request.args.get('limit', 50, type=int)
+    with get_db_connection() as conn:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("""
+            SELECT id, username, amount, message, donated_at
+            FROM donations
+            ORDER BY donated_at DESC
+            LIMIT %s
+        """, (limit,))
+        donations = cur.fetchall()
+        for d in donations:
+            d['donated_at'] = d['donated_at'].isoformat() if d['donated_at'] else None
+    return jsonify(donations)
 
 # ========== 公共接口 ==========
 @app.route('/')
 def index():
-    print(f"[LOG] / 被调用，来自 {request.remote_addr}")
     return jsonify({"message": "枫叶社区后端 API 运行中"})
 
 @app.route('/ping')
 def ping():
-    print(f"[LOG] /ping 被调用，来自 {request.remote_addr}")
     return jsonify({"pong": "ok"})
 
 @app.route('/get_bore_port')
 def get_bore_port():
-    print(f"[LOG] /get_bore_port 被调用，来自 {request.remote_addr}")
     try:
         with open(os.path.expanduser('~/current_bore_port'), 'r') as f:
             port = f.read().strip()
@@ -392,52 +699,33 @@ def get_bore_port():
     except FileNotFoundError:
         return jsonify({"error": "Port file not found"}), 404
     except Exception as e:
+        log_with_ip(f"获取隧道端口失败: {e}", level='error')
         return jsonify({"error": str(e)}), 500
 
+# 临时关闭注册
 @app.route('/register', methods=['POST'])
 def register():
-    print(f"[LOG] /register 被调用，来自 {request.remote_addr}")
-    data = request.json
-    username = data.get('username')
-    password = data.get('password')
-    nickname = data.get('nickname', username)
-    if not username or not password:
-        return jsonify({"success": False, "error": "用户名和密码不能为空"})
-    try:
-        hashed = generate_password_hash(password)
-        with get_db_connection() as conn:
-            cur = conn.cursor()
-            cur.execute(
-                "INSERT INTO users (username, password, nickname, coins) VALUES (%s, %s, %s, %s)",
-                (username, hashed, nickname, 50)
-            )
-            conn.commit()
-        print(f"[LOG] 用户 {username} 注册成功")
-        return jsonify({"success": True})
-    except psycopg2.IntegrityError:
-        print(f"[LOG] 用户 {username} 注册失败：用户名已存在")
-        return jsonify({"success": False, "error": "用户名已存在"})
-    except Exception as e:
-        print(f"[LOG] 用户 {username} 注册异常: {e}")
-        return jsonify({"success": False, "error": str(e)})
+    return jsonify({"success": False, "error": "注册暂时关闭，请稍后再试或联系管理员"}), 403
 
 @app.route('/login', methods=['POST'])
 def login():
-    print(f"[LOG] /login 被调用，来自 {request.remote_addr}")
     data = request.json
     username = data.get('username')
     password = data.get('password')
+    client_ip = get_real_ip()
     with get_db_connection() as conn:
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute(
-            "SELECT id, username, nickname, coins, plant_data, friends, password FROM users WHERE username=%s",
+            "SELECT id, username, nickname, coins, plant_data, friends, password, is_banned FROM users WHERE username=%s",
             (username,)
         )
         user = cur.fetchone()
         if not user:
-            print(f"[LOG] 用户 {username} 登录失败：用户不存在")
+            log_with_ip(f"登录失败：用户 {username} 不存在", level='warning')
             return jsonify({"success": False, "error": "用户名或密码错误"})
-
+        if user.get('is_banned', False):
+            log_with_ip(f"被封禁用户尝试登录：{username}", level='warning')
+            return jsonify({"success": False, "error": "您的账号已被封禁"}), 403
         stored_pw = user['password']
         if stored_pw.startswith(('scrypt:', 'pbkdf2:', 'bcrypt:')) or len(stored_pw) > 60:
             valid = check_password_hash(stored_pw, password)
@@ -445,25 +733,23 @@ def login():
             valid = (stored_pw == password)
             if valid:
                 hashed = generate_password_hash(password)
-                cur.execute(
-                    "UPDATE users SET password = %s WHERE username = %s",
-                    (hashed, username)
-                )
+                cur.execute("UPDATE users SET password = %s WHERE username = %s", (hashed, username))
                 conn.commit()
-
         if valid:
             session['username'] = username
+            cur.execute("UPDATE users SET last_ip = %s WHERE username = %s", (client_ip, username))
+            conn.commit()
             del user['password']
-            print(f"[LOG] 用户 {username} 登录成功")
+            del user['is_banned']
+            log_with_ip(f"用户 {username} 登录成功，IP {client_ip}")
             return jsonify({"success": True, "user": user})
         else:
-            print(f"[LOG] 用户 {username} 登录失败：密码错误")
+            log_with_ip(f"用户 {username} 登录失败：密码错误", level='warning')
             return jsonify({"success": False, "error": "用户名或密码错误"})
 
 # ---------- 国际象棋 AI ----------
 @app.route('/api/chess/move', methods=['POST'])
 def chess_move():
-    print(f"[LOG] /api/chess/move 被调用，来自 {request.remote_addr}")
     data = request.json
     fen = data.get('fen')
     difficulty = data.get('difficulty', 8)
@@ -471,10 +757,9 @@ def chess_move():
         return jsonify({"error": "Missing fen"}), 400
     try:
         move = get_ai_move_sync(fen, difficulty)
-        print(f"[LOG] 国际象棋AI返回: {move}")
         return jsonify({"move": move})
     except Exception as e:
-        print(f"[LOG] 国际象棋AI错误: {e}")
+        log_with_ip(f"国际象棋 AI 错误: {e}", level='error')
         return jsonify({"error": str(e)}), 500
 
 def get_ai_move_sync(fen: str, difficulty: int):
@@ -501,7 +786,6 @@ def get_ai_move_sync(fen: str, difficulty: int):
 @require_login
 def send_message():
     current_user = session['username']
-    print(f"[LOG] /send_message 被调用，来自 {request.remote_addr}，用户 {current_user}")
     data = request.json
     username = data.get('username')
     if username != current_user:
@@ -517,12 +801,10 @@ def send_message():
             (username, nickname, content)
         )
         conn.commit()
-    print(f"[LOG] 用户 {username} 发送消息成功")
     return jsonify({"success": True})
 
 @app.route('/get_messages', methods=['GET'])
 def get_messages():
-    print(f"[LOG] /get_messages 被调用，来自 {request.remote_addr}")
     limit = request.args.get('limit', 20, type=int)
     with get_db_connection() as conn:
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -538,7 +820,6 @@ def get_messages():
 # ---------- 排行榜 ----------
 @app.route('/rank', methods=['GET'])
 def rank():
-    print(f"[LOG] /rank 被调用，来自 {request.remote_addr}")
     with get_db_connection() as conn:
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute("SELECT username, nickname, coins FROM users ORDER BY coins DESC LIMIT 20")
@@ -550,7 +831,6 @@ def rank():
 @require_login
 def update_plant():
     current_user = session['username']
-    print(f"[LOG] /update_plant 被调用，来自 {request.remote_addr}，用户 {current_user}")
     data = request.json
     username = data.get('username')
     if username != current_user:
@@ -563,12 +843,10 @@ def update_plant():
             (psycopg2.extras.Json(plant_data), username)
         )
         conn.commit()
-    print(f"[LOG] 用户 {username} 植物数据更新成功")
     return jsonify({"success": True})
 
 @app.route('/get_plant', methods=['GET'])
 def get_plant():
-    print(f"[LOG] /get_plant 被调用，来自 {request.remote_addr}")
     username = request.args.get('username')
     with get_db_connection() as conn:
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -582,7 +860,6 @@ def get_plant():
 # ---------- 商店 ----------
 @app.route('/get_products', methods=['GET'])
 def get_products():
-    print(f"[LOG] /get_products 被调用，来自 {request.remote_addr}")
     with get_db_connection() as conn:
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute("SELECT id, name, price, stock FROM products")
@@ -593,7 +870,6 @@ def get_products():
 @require_login
 def buy_product():
     current_user = session['username']
-    print(f"[LOG] /buy_product 被调用，来自 {request.remote_addr}，用户 {current_user}")
     data = request.json
     username = data.get('username')
     if username != current_user:
@@ -619,14 +895,12 @@ def buy_product():
             (username, name, price)
         )
         conn.commit()
-    print(f"[LOG] 用户 {username} 购买商品 {name} 成功")
     return jsonify({"success": True, "price": price})
 
 @app.route('/update_user', methods=['POST'])
 @require_login
 def update_user():
     current_user = session['username']
-    print(f"[LOG] /update_user 被调用，来自 {request.remote_addr}，用户 {current_user}")
     data = request.json
     username = data.get('username')
     if username != current_user:
@@ -644,7 +918,6 @@ def update_user():
 @require_login
 def add_friend():
     current_user = session['username']
-    print(f"[LOG] /add_friend 被调用，来自 {request.remote_addr}，用户 {current_user}")
     data = request.json
     username = data.get('username')
     if username != current_user:
@@ -664,14 +937,12 @@ def add_friend():
             (friend, username, friend)
         )
         conn.commit()
-    print(f"[LOG] 用户 {username} 添加好友 {friend} 成功")
     return jsonify({"success": True})
 
 @app.route('/remove_friend', methods=['POST'])
 @require_login
 def remove_friend():
     current_user = session['username']
-    print(f"[LOG] /remove_friend 被调用，来自 {request.remote_addr}，用户 {current_user}")
     data = request.json
     username = data.get('username')
     if username != current_user:
@@ -686,7 +957,6 @@ def remove_friend():
             (friend, username)
         )
         conn.commit()
-    print(f"[LOG] 用户 {username} 删除好友 {friend} 成功")
     return jsonify({"success": True})
 
 # ---------- 私聊 ----------
@@ -694,7 +964,6 @@ def remove_friend():
 @require_login
 def send_dm():
     current_user = session['username']
-    print(f"[LOG] /send_dm 被调用，来自 {request.remote_addr}，用户 {current_user}")
     data = request.json
     sender = data.get('sender')
     if sender != current_user:
@@ -710,12 +979,10 @@ def send_dm():
             (sender, receiver, content)
         )
         conn.commit()
-    print(f"[LOG] 用户 {sender} 发送私聊给 {receiver} 成功")
     return jsonify({"success": True})
 
 @app.route('/get_dms', methods=['GET'])
 def get_dms():
-    print(f"[LOG] /get_dms 被调用，来自 {request.remote_addr}")
     user1 = request.args.get('user1')
     user2 = request.args.get('user2')
     if not user1 or not user2:
@@ -731,175 +998,11 @@ def get_dms():
             msg['time'] = msg['time'].isoformat() if msg['time'] else None
     return jsonify(messages)
 
-# ========== 管理员接口 ==========
-@app.route('/admin/users', methods=['GET'])
-@admin_required
-def admin_users():
-    print(f"[LOG] /admin/users 被调用，来自 {request.remote_addr}")
-    with get_db_connection() as conn:
-        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        cur.execute("SELECT id, username, nickname, coins, plant_data FROM users")
-        users = cur.fetchall()
-    return jsonify(users)
-
-@app.route('/admin/grant', methods=['POST'])
-@admin_required
-def admin_grant():
-    print(f"[LOG] /admin/grant 被调用，来自 {request.remote_addr}")
-    real_ip = request.headers.get('Cf-Connecting-Ip') or request.remote_addr
-    data = request.json
-    log_entry = {
-        'time': datetime.datetime.now().isoformat(),
-        'real_ip': real_ip,
-        'cloudflare_ip': request.remote_addr,
-        'headers': dict(request.headers),
-        'data': data
-    }
-    print("GRANT REQUEST:", json.dumps(log_entry, indent=2))
-    with open('grant.log', 'a') as f:
-        f.write(json.dumps(log_entry) + '\n')
-    if data is None:
-        return jsonify({"success": False, "error": "Missing JSON body"}), 400
-    username = data.get('username')
-    amount = data.get('amount')
-    if not username or amount is None:
-        return jsonify({"success": False, "error": "Missing parameters"}), 400
-    try:
-        amount = int(amount)
-        if amount <= 0:
-            raise ValueError
-    except:
-        return jsonify({"success": False, "error": "Amount must be a positive integer"}), 400
-    with get_db_connection() as conn:
-        cur = conn.cursor()
-        cur.execute("UPDATE users SET coins = coins + %s WHERE username = %s", (amount, username))
-        if cur.rowcount == 0:
-            return jsonify({"success": False, "error": "User not found"}), 404
-        conn.commit()
-    print(f"[LOG] 管理员发放 {amount} 枫叶币给 {username} 成功")
-    return jsonify({"success": True, "amount": amount, "username": username})
-
-@app.route('/admin/deduct', methods=['POST'])
-@admin_required
-def admin_deduct():
-    print(f"[LOG] /admin/deduct 被调用，来自 {request.remote_addr}")
-    data = request.json
-    username = data.get('username')
-    amount = data.get('amount')
-    if not username or amount is None:
-        return jsonify({"success": False, "error": "Missing parameters"})
-    with get_db_connection() as conn:
-        cur = conn.cursor()
-        cur.execute("UPDATE users SET coins = coins - %s WHERE username = %s AND coins >= %s", (amount, username, amount))
-        if cur.rowcount == 0:
-            return jsonify({"success": False, "error": "Insufficient coins or user not found"})
-        conn.commit()
-    print(f"[LOG] 管理员扣除 {amount} 枫叶币从 {username} 成功")
-    return jsonify({"success": True})
-
-@app.route('/admin/delete', methods=['POST'])
-@admin_required
-def admin_delete():
-    print(f"[LOG] /admin/delete 被调用，来自 {request.remote_addr}")
-    data = request.json
-    username = data.get('username')
-    if not username:
-        return jsonify({"success": False, "error": "Missing username"})
-    with get_db_connection() as conn:
-        cur = conn.cursor()
-        try:
-            cur.execute("DELETE FROM messages WHERE username = %s", (username,))
-            cur.execute("DELETE FROM purchases WHERE username = %s", (username,))
-            cur.execute("DELETE FROM direct_messages WHERE sender = %s OR receiver = %s", (username, username))
-            cur.execute("DELETE FROM users WHERE username = %s", (username,))
-            conn.commit()
-            print(f"[LOG] 管理员删除用户 {username} 成功")
-            return jsonify({"success": True})
-        except Exception as e:
-            conn.rollback()
-            print(f"[LOG] 删除用户 {username} 失败: {e}")
-            return jsonify({"success": False, "error": str(e)})
-
-@app.route('/admin/add_product', methods=['POST'])
-@admin_required
-def admin_add_product():
-    print(f"[LOG] /admin/add_product 被调用，来自 {request.remote_addr}")
-    data = request.json
-    name = data.get('name')
-    price = data.get('price')
-    stock = data.get('stock')
-    if not name or price is None or stock is None:
-        return jsonify({"success": False, "error": "Missing parameters"})
-    with get_db_connection() as conn:
-        cur = conn.cursor()
-        cur.execute(
-            "INSERT INTO products (name, price, stock) VALUES (%s, %s, %s)",
-            (name, price, stock)
-        )
-        conn.commit()
-    print(f"[LOG] 管理员添加商品 {name} 成功")
-    return jsonify({"success": True})
-
-@app.route('/admin/delete_product', methods=['POST'])
-@admin_required
-def admin_delete_product():
-    print(f"[LOG] /admin/delete_product 被调用，来自 {request.remote_addr}")
-    data = request.json
-    product_id = data.get('product_id')
-    if not product_id:
-        return jsonify({"success": False, "error": "Missing product_id"})
-    with get_db_connection() as conn:
-        cur = conn.cursor()
-        cur.execute("DELETE FROM products WHERE id = %s", (product_id,))
-        conn.commit()
-    print(f"[LOG] 管理员删除商品 ID {product_id} 成功")
-    return jsonify({"success": True})
-
-@app.route('/admin/issue_certificate', methods=['POST'])
-@admin_required
-def admin_issue_certificate():
-    print(f"[LOG] /admin/issue_certificate 被调用，来自 {request.remote_addr}")
-    data = request.json
-    username = data.get('username')
-    cert_name = data.get('cert_name')
-    admin_user = data.get('admin_user')
-    if not username or not cert_name or not admin_user:
-        return jsonify({"success": False, "error": "缺少参数"}), 400
-    cert_number = f"CERT-{int(time.time())}-{random.randint(1000,9999)}"
-    with get_db_connection() as conn:
-        cur = conn.cursor()
-        cur.execute("""
-            INSERT INTO certificates (username, cert_name, cert_number, issued_by)
-            VALUES (%s, %s, %s, %s)
-        """, (username, cert_name, cert_number, admin_user))
-        conn.commit()
-    print(f"[LOG] 管理员 {admin_user} 为用户 {username} 发放证书 {cert_name}，编号 {cert_number}")
-    return jsonify({"success": True, "cert_number": cert_number})
-
-@app.route('/admin/donations', methods=['GET'])
-@admin_required
-def admin_get_donations():
-    print(f"[LOG] /admin/donations 被调用，来自 {request.remote_addr}")
-    limit = request.args.get('limit', 50, type=int)
-    with get_db_connection() as conn:
-        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        cur.execute("""
-            SELECT id, username, amount, message, donated_at
-            FROM donations
-            ORDER BY donated_at DESC
-            LIMIT %s
-        """, (limit,))
-        donations = cur.fetchall()
-        for d in donations:
-            d['donated_at'] = d['donated_at'].isoformat() if d['donated_at'] else None
-    return jsonify(donations)
-
 # ---------- 捐赠 ----------
 @app.route('/api/donate', methods=['POST'])
 @require_login
 def donate():
     current_user = session['username']
-    print(f"[LOG] /api/donate 被调用，来自 {request.remote_addr}，用户 {current_user}")
     data = request.json
     username = data.get('username')
     if username != current_user:
@@ -928,12 +1031,11 @@ def donate():
             (username, amount, message)
         )
         conn.commit()
-    print(f"[LOG] 用户 {username} 捐赠 {amount} 枫叶币成功")
+    log_with_ip(f"用户 {username} 捐赠 {amount} 枫叶币，留言：{message}")
     return jsonify({"success": True})
 
 @app.route('/api/donations', methods=['GET'])
 def get_donations():
-    print(f"[LOG] /api/donations 被调用，来自 {request.remote_addr}")
     limit = request.args.get('limit', 20, type=int)
     with get_db_connection() as conn:
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -956,16 +1058,11 @@ def get_donations():
         ranking = cur.fetchall()
         cur.execute("SELECT SUM(amount) as total_funds FROM donations")
         total = cur.fetchone()['total_funds'] or 0
-    return jsonify({
-        "recent": recent,
-        "ranking": ranking,
-        "total_funds": total
-    })
+    return jsonify({"recent": recent, "ranking": ranking, "total_funds": total})
 
 # ---------- 证书 ----------
 @app.route('/api/certificates/<username>', methods=['GET'])
 def get_user_certificates(username):
-    print(f"[LOG] /api/certificates/{username} 被调用，来自 {request.remote_addr}")
     with get_db_connection() as conn:
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute("""
@@ -1005,7 +1102,6 @@ def increment_monthly_usage(added):
 
 @app.route('/api/baidu_translate', methods=['POST'])
 def baidu_translate():
-    print(f"[LOG] /api/baidu_translate 被调用，来自 {request.remote_addr}")
     data = request.json
     text = data.get('text', '').strip()
     if not text:
@@ -1013,11 +1109,7 @@ def baidu_translate():
     char_len = len(text)
     current_usage = get_monthly_usage()
     if current_usage + char_len > TRANSLATION_MONTHLY_LIMIT - 15:
-        return jsonify({
-            "error": "本月翻译额度即将用尽，暂停翻译",
-            "used": current_usage,
-            "limit": TRANSLATION_MONTHLY_LIMIT
-        }), 429
+        return jsonify({"error": "本月翻译额度即将用尽，暂停翻译", "used": current_usage, "limit": TRANSLATION_MONTHLY_LIMIT}), 429
     salt = str(random.randint(32768, 65536))
     sign_str = BAIDU_APP_ID + text + salt + BAIDU_SECRET_KEY
     sign = hashlib.md5(sign_str.encode('utf-8')).hexdigest()
@@ -1036,27 +1128,19 @@ def baidu_translate():
         if 'trans_result' in result:
             increment_monthly_usage(char_len)
             translated = ''.join([item['dst'] for item in result['trans_result']])
-            print(f"[LOG] 翻译成功，字符数 {char_len}")
             return jsonify({"translated": translated})
         else:
             error_msg = result.get('error_msg', '翻译失败')
-            print(f"[LOG] 翻译失败: {error_msg}")
             return jsonify({"error": error_msg}), 500
     except Exception as e:
-        print(f"[LOG] 翻译异常: {e}")
-        traceback.print_exc()
+        log_with_ip(f"百度翻译失败: {e}", level='error')
         return jsonify({"error": str(e)}), 500
 
-# ========== 本地 Ollama 模型接口 ==========
+# ---------- Ollama ----------
 OLLAMA_URL = "http://localhost:11434/api/generate"
 
 def call_ollama(prompt, model=DEFAULT_OLLAMA_MODEL, temperature=0.7):
-    payload = {
-        "model": model,
-        "prompt": prompt,
-        "stream": False,
-        "options": {"temperature": temperature}
-    }
+    payload = {"model": model, "prompt": prompt, "stream": False, "options": {"temperature": temperature}}
     try:
         resp = requests.post(OLLAMA_URL, json=payload, timeout=120)
         resp.raise_for_status()
@@ -1065,12 +1149,7 @@ def call_ollama(prompt, model=DEFAULT_OLLAMA_MODEL, temperature=0.7):
         raise Exception(f"Ollama 调用失败: {str(e)}")
 
 def call_ollama_stream(prompt, model=DEFAULT_OLLAMA_MODEL, temperature=0.7):
-    payload = {
-        "model": model,
-        "prompt": prompt,
-        "stream": True,
-        "options": {"temperature": temperature}
-    }
+    payload = {"model": model, "prompt": prompt, "stream": True, "options": {"temperature": temperature}}
     response = requests.post(OLLAMA_URL, json=payload, stream=True)
     for line in response.iter_lines():
         if line:
@@ -1082,7 +1161,6 @@ def call_ollama_stream(prompt, model=DEFAULT_OLLAMA_MODEL, temperature=0.7):
 @require_login
 def aippt_outline():
     username = session['username']
-    print(f"[LOG] /tools/aippt_outline 被调用，来自 {request.remote_addr}，用户 {username}")
     data = request.json
     content = data.get('content')
     language = data.get('language', 'zh')
@@ -1105,7 +1183,6 @@ def aippt_outline():
 @require_login
 def aippt():
     username = session['username']
-    print(f"[LOG] /tools/aippt 被调用，来自 {request.remote_addr}，用户 {username}")
     data = request.json
     content = data.get('content')
     language = data.get('language', 'zh')
@@ -1139,6 +1216,7 @@ def aippt():
                 yield json.dumps(slide, ensure_ascii=False) + "\n"
         return Response(stream_with_context(generate()), mimetype='text/plain')
     except Exception as e:
+        log_with_ip(f"AI PPT 生成失败: {e}", level='error')
         return jsonify({"error": str(e)}), 500
 
 @app.route('/tools/ai_writing', methods=['POST'])
@@ -1149,50 +1227,19 @@ def ai_writing():
 @app.route('/pptist')
 @app.route('/pptist/<path:filename>')
 def serve_pptist(filename='index.html'):
-    print(f"[LOG] /pptist 被调用，来自 {request.remote_addr}，文件 {filename}")
     return send_from_directory('static/pptist', filename)
 
 @app.route('/mocks/slides.json')
 def mock_slides():
-    print(f"[LOG] /mocks/slides.json 被调用，来自 {request.remote_addr}")
     default_slides = [
-        {
-            "id": "cover",
-            "elements": [
-                {
-                    "type": "text",
-                    "content": "欢迎使用枫叶社区 AI PPT",
-                    "style": {"fontSize": 48, "bold": True, "color": "#2c3e50"}
-                },
-                {
-                    "type": "text",
-                    "content": "智能生成，一键创作",
-                    "style": {"fontSize": 24, "color": "#34495e"}
-                }
-            ]
-        },
-        {
-            "id": "page1",
-            "elements": [
-                {
-                    "type": "text",
-                    "content": "功能介绍",
-                    "style": {"fontSize": 36, "bold": True}
-                },
-                {
-                    "type": "text",
-                    "content": "• 支持多种模板\n• 实时预览\n• 导出PPTX",
-                    "style": {"fontSize": 24, "lineHeight": 1.5}
-                }
-            ]
-        }
+        {"id": "cover", "elements": [{"type": "text", "content": "欢迎使用枫叶社区 AI PPT", "style": {"fontSize": 48, "bold": True, "color": "#2c3e50"}}, {"type": "text", "content": "智能生成，一键创作", "style": {"fontSize": 24, "color": "#34495e"}}]},
+        {"id": "page1", "elements": [{"type": "text", "content": "功能介绍", "style": {"fontSize": 36, "bold": True}}, {"type": "text", "content": "• 支持多种模板\n• 实时预览\n• 导出PPTX", "style": {"fontSize": 24, "lineHeight": 1.5}}]}
     ]
     return jsonify(default_slides)
 
-# ========== 银行 API ==========
+# ---------- 银行 API ----------
 @app.route('/api/bank/info/<bank_code>', methods=['GET'])
 def bank_info(bank_code):
-    print(f"[LOG] /api/bank/info/{bank_code} 被调用，来自 {request.remote_addr}")
     with get_db_connection() as conn:
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute("SELECT name, interest_rate, music_url FROM banks WHERE code=%s", (bank_code,))
@@ -1203,7 +1250,6 @@ def bank_info(bank_code):
 
 @app.route('/api/bank/register', methods=['POST'])
 def bank_register():
-    print(f"[LOG] /api/bank/register 被调用，来自 {request.remote_addr}")
     data = request.json
     bank_code = data.get('bank_code')
     username = data.get('username')
@@ -1219,17 +1265,13 @@ def bank_register():
         if cur.fetchone():
             return jsonify({"error": "该银行账户已注册"}), 400
         hashed = generate_password_hash(password)
-        cur.execute(
-            "INSERT INTO bank_accounts (bank_code, username, password_hash) VALUES (%s, %s, %s)",
-            (bank_code, username, hashed)
-        )
+        cur.execute("INSERT INTO bank_accounts (bank_code, username, password_hash) VALUES (%s, %s, %s)", (bank_code, username, hashed))
         conn.commit()
-    print(f"[LOG] 用户 {username} 在银行 {bank_code} 注册成功")
+    log_with_ip(f"用户 {username} 在银行 {bank_code} 注册账户")
     return jsonify({"success": True})
 
 @app.route('/api/bank/login', methods=['POST'])
 def bank_login():
-    print(f"[LOG] /api/bank/login 被调用，来自 {request.remote_addr}")
     data = request.json
     bank_code = data.get('bank_code')
     username = data.get('username')
@@ -1238,31 +1280,28 @@ def bank_login():
         return jsonify({"error": "缺少参数"}), 400
     with get_db_connection() as conn:
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        cur.execute(
-            "SELECT id, username, password_hash, balance FROM bank_accounts WHERE bank_code=%s AND username=%s",
-            (bank_code, username)
-        )
+        cur.execute("SELECT id, username, password_hash, balance FROM bank_accounts WHERE bank_code=%s AND username=%s", (bank_code, username))
         account = cur.fetchone()
         if not account or not check_password_hash(account['password_hash'], password):
+            log_with_ip(f"银行登录失败：{username}@{bank_code}", level='warning')
             return jsonify({"error": "用户名或密码错误"}), 401
         session['bank_logged_in'] = True
         session['bank_username'] = username
         session['bank_code'] = bank_code
         del account['password_hash']
-        print(f"[LOG] 用户 {username} 在银行 {bank_code} 登录成功")
+        log_with_ip(f"银行登录成功：{username}@{bank_code}")
         return jsonify({"success": True, "account": account})
 
 @app.route('/api/bank/logout', methods=['POST'])
 def bank_logout():
-    print(f"[LOG] /api/bank/logout 被调用，来自 {request.remote_addr}")
     session.pop('bank_logged_in', None)
     session.pop('bank_username', None)
     session.pop('bank_code', None)
+    log_with_ip("银行登出")
     return jsonify({"success": True})
 
 @app.route('/api/bank/balance', methods=['GET'])
 def bank_balance():
-    print(f"[LOG] /api/bank/balance 被调用，来自 {request.remote_addr}")
     if not session.get('bank_logged_in'):
         return jsonify({"error": "未登录银行"}), 401
     bank_code = session['bank_code']
@@ -1275,7 +1314,6 @@ def bank_balance():
 
 @app.route('/api/bank/deposit', methods=['POST'])
 def bank_deposit():
-    print(f"[LOG] /api/bank/deposit 被调用，来自 {request.remote_addr}")
     if not session.get('bank_logged_in'):
         return jsonify({"error": "未登录银行"}), 401
     bank_code = session['bank_code']
@@ -1292,17 +1330,13 @@ def bank_deposit():
             return jsonify({"error": "枫叶币不足"}), 400
         cur.execute("UPDATE users SET coins = coins - %s WHERE username=%s", (amount, username))
         cur.execute("UPDATE bank_accounts SET balance = balance + %s WHERE bank_code=%s AND username=%s", (amount, bank_code, username))
-        cur.execute(
-            "INSERT INTO bank_transactions (bank_code, username, type, amount) VALUES (%s, %s, 'deposit', %s)",
-            (bank_code, username, amount)
-        )
+        cur.execute("INSERT INTO bank_transactions (bank_code, username, type, amount) VALUES (%s, %s, 'deposit', %s)", (bank_code, username, amount))
         conn.commit()
-    print(f"[LOG] 用户 {username} 在银行 {bank_code} 存款 {amount} 成功")
+    log_with_ip(f"用户 {username} 在银行 {bank_code} 存款 {amount} 枫叶币")
     return jsonify({"success": True})
 
 @app.route('/api/bank/withdraw', methods=['POST'])
 def bank_withdraw():
-    print(f"[LOG] /api/bank/withdraw 被调用，来自 {request.remote_addr}")
     if not session.get('bank_logged_in'):
         return jsonify({"error": "未登录银行"}), 401
     bank_code = session['bank_code']
@@ -1319,17 +1353,13 @@ def bank_withdraw():
             return jsonify({"error": "银行存款不足"}), 400
         cur.execute("UPDATE bank_accounts SET balance = balance - %s WHERE bank_code=%s AND username=%s", (amount, bank_code, username))
         cur.execute("UPDATE users SET coins = coins + %s WHERE username=%s", (amount, username))
-        cur.execute(
-            "INSERT INTO bank_transactions (bank_code, username, type, amount) VALUES (%s, %s, 'withdraw', %s)",
-            (bank_code, username, amount)
-        )
+        cur.execute("INSERT INTO bank_transactions (bank_code, username, type, amount) VALUES (%s, %s, 'withdraw', %s)", (bank_code, username, amount))
         conn.commit()
-    print(f"[LOG] 用户 {username} 在银行 {bank_code} 取款 {amount} 成功")
+    log_with_ip(f"用户 {username} 在银行 {bank_code} 取款 {amount} 枫叶币")
     return jsonify({"success": True})
 
 @app.route('/api/bank/transfer', methods=['POST'])
 def bank_transfer():
-    print(f"[LOG] /api/bank/transfer 被调用，来自 {request.remote_addr}")
     if not session.get('bank_logged_in'):
         return jsonify({"error": "未登录银行"}), 401
     bank_code = session['bank_code']
@@ -1352,21 +1382,14 @@ def bank_transfer():
             return jsonify({"error": "存款余额不足"}), 400
         cur.execute("UPDATE bank_accounts SET balance = balance - %s WHERE bank_code=%s AND username=%s", (amount, bank_code, from_user))
         cur.execute("UPDATE bank_accounts SET balance = balance + %s WHERE bank_code=%s AND username=%s", (amount, bank_code, to_user))
-        cur.execute(
-            "INSERT INTO bank_transactions (bank_code, username, type, amount, target_username) VALUES (%s, %s, 'transfer_out', %s, %s)",
-            (bank_code, from_user, amount, to_user)
-        )
-        cur.execute(
-            "INSERT INTO bank_transactions (bank_code, username, type, amount, target_username) VALUES (%s, %s, 'transfer_in', %s, %s)",
-            (bank_code, to_user, amount, from_user)
-        )
+        cur.execute("INSERT INTO bank_transactions (bank_code, username, type, amount, target_username) VALUES (%s, %s, 'transfer_out', %s, %s)", (bank_code, from_user, amount, to_user))
+        cur.execute("INSERT INTO bank_transactions (bank_code, username, type, amount, target_username) VALUES (%s, %s, 'transfer_in', %s, %s)", (bank_code, to_user, amount, from_user))
         conn.commit()
-    print(f"[LOG] 用户 {from_user} 在银行 {bank_code} 转账 {amount} 给 {to_user} 成功")
+    log_with_ip(f"用户 {from_user} 在银行 {bank_code} 向 {to_user} 转账 {amount} 枫叶币")
     return jsonify({"success": True})
 
 @app.route('/api/bank/transactions', methods=['GET'])
 def bank_transactions():
-    print(f"[LOG] /api/bank/transactions 被调用，来自 {request.remote_addr}")
     if not session.get('bank_logged_in'):
         return jsonify({"error": "未登录银行"}), 401
     bank_code = session['bank_code']
@@ -1374,13 +1397,7 @@ def bank_transactions():
     limit = request.args.get('limit', 20, type=int)
     with get_db_connection() as conn:
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        cur.execute("""
-            SELECT type, amount, target_username, created_at
-            FROM bank_transactions
-            WHERE bank_code=%s AND username=%s
-            ORDER BY created_at DESC
-            LIMIT %s
-        """, (bank_code, username, limit))
+        cur.execute("SELECT type, amount, target_username, created_at FROM bank_transactions WHERE bank_code=%s AND username=%s ORDER BY created_at DESC LIMIT %s", (bank_code, username, limit))
         transactions = cur.fetchall()
         for t in transactions:
             t['created_at'] = t['created_at'].isoformat()
@@ -1388,7 +1405,6 @@ def bank_transactions():
 
 @app.route('/api/bank/checkin', methods=['POST'])
 def bank_checkin():
-    print(f"[LOG] /api/bank/checkin 被调用，来自 {request.remote_addr}")
     if not session.get('bank_logged_in'):
         return jsonify({"error": "未登录银行"}), 401
     bank_code = session['bank_code']
@@ -1410,17 +1426,13 @@ def bank_checkin():
         interest = int(balance * interest_rate)
         new_balance = balance + interest
         cur.execute("UPDATE bank_accounts SET balance = %s, last_checkin = NOW() WHERE bank_code=%s AND username=%s", (new_balance, bank_code, username))
-        cur.execute(
-            "INSERT INTO bank_transactions (bank_code, username, type, amount) VALUES (%s, %s, 'checkin', %s)",
-            (bank_code, username, interest)
-        )
+        cur.execute("INSERT INTO bank_transactions (bank_code, username, type, amount) VALUES (%s, %s, 'checkin', %s)", (bank_code, username, interest))
         conn.commit()
-    print(f"[LOG] 用户 {username} 在银行 {bank_code} 签到，获得利息 {interest}")
+    log_with_ip(f"用户 {username} 在银行 {bank_code} 签到，获得利息 {interest} 枫叶币")
     return jsonify({"success": True, "interest": interest, "balance": new_balance})
 
 @app.route('/api/bank/raffle', methods=['POST'])
 def bank_raffle():
-    print(f"[LOG] /api/bank/raffle 被调用，来自 {request.remote_addr}")
     if not session.get('bank_logged_in'):
         return jsonify({"error": "未登录银行"}), 401
     bank_code = session['bank_code']
@@ -1434,22 +1446,12 @@ def bank_raffle():
         reward = random.randint(10, 20)
         new_balance = balance - RAFFLE_COST + reward
         cur.execute("UPDATE bank_accounts SET balance = %s WHERE bank_code=%s AND username=%s", (new_balance, bank_code, username))
-        cur.execute("""
-            INSERT INTO bank_transactions (bank_code, username, type, amount, description)
-            VALUES (%s, %s, 'raffle', %s, %s)
-        """, (bank_code, username, reward - RAFFLE_COST, f"抽奖消耗{RAFFLE_COST}，获得{reward}，净收益{reward - RAFFLE_COST}"))
+        cur.execute("INSERT INTO bank_transactions (bank_code, username, type, amount, description) VALUES (%s, %s, 'raffle', %s, %s)", (bank_code, username, reward - RAFFLE_COST, f"抽奖消耗{RAFFLE_COST}，获得{reward}，净收益{reward - RAFFLE_COST}"))
         conn.commit()
-    print(f"[LOG] 用户 {username} 在银行 {bank_code} 抽奖，获得 {reward}，净收益 {reward - RAFFLE_COST}")
-    return jsonify({
-        "success": True,
-        "reward": reward,
-        "cost": RAFFLE_COST,
-        "net": reward - RAFFLE_COST,
-        "balance": new_balance
-    })
+    log_with_ip(f"用户 {username} 在银行 {bank_code} 抽奖，花费 {RAFFLE_COST} 获得 {reward}，净收益 {reward - RAFFLE_COST}")
+    return jsonify({"success": True, "reward": reward, "cost": RAFFLE_COST, "net": reward - RAFFLE_COST, "balance": new_balance})
 
 # ========== WebSocket 基础服务 ==========
-# 创建 SocketIO 实例（不依赖终端环境变量，确保聊天室等功能可用）
 socketio = SocketIO(app, cors_allowed_origins="*", manage_session=True)
 
 # ========== WebSocket 聊天室 ==========
@@ -1462,7 +1464,7 @@ def handle_chat_join():
         emit('error', {'msg': '未登录'})
         return
     online_users.add(username)
-    print(f"[CHAT] {username} 加入聊天室，当前在线: {len(online_users)}")
+    log_with_ip(f"[CHAT] {username} 加入聊天室，当前在线: {len(online_users)}")
 
 @socketio.on('chat_send')
 def handle_chat_send(data):
@@ -1475,21 +1477,11 @@ def handle_chat_send(data):
     if not content:
         emit('error', {'msg': '消息不能为空'})
         return
-
     with get_db_connection() as conn:
         cur = conn.cursor()
-        cur.execute(
-            "INSERT INTO messages (username, nickname, content) VALUES (%s, %s, %s)",
-            (username, nickname, content)
-        )
+        cur.execute("INSERT INTO messages (username, nickname, content) VALUES (%s, %s, %s)", (username, nickname, content))
         conn.commit()
-
-    msg = {
-        'username': username,
-        'nickname': nickname,
-        'content': content,
-        'time': datetime.datetime.now().isoformat()
-    }
+    msg = {'username': username, 'nickname': nickname, 'content': content, 'time': datetime.datetime.now().isoformat()}
     emit('chat_message', msg, broadcast=True)
 
 @socketio.on('chat_leave')
@@ -1497,9 +1489,9 @@ def handle_chat_leave():
     username = session.get('username')
     if username:
         online_users.discard(username)
-        print(f"[CHAT] {username} 离开聊天室，当前在线: {len(online_users)}")
+        log_with_ip(f"[CHAT] {username} 离开聊天室，当前在线: {len(online_users)}")
 
-# ========== WebSocket 数据库终端（依赖环境变量）==========
+# ========== WebSocket 数据库终端 ==========
 if MAPLE_TERMINAL_PASSWORD and TERMINAL_PASSWORD_NORMAL and TERMINAL_PASSWORD_SUPER:
     processes = {}
 
@@ -1527,7 +1519,7 @@ if MAPLE_TERMINAL_PASSWORD and TERMINAL_PASSWORD_NORMAL and TERMINAL_PASSWORD_SU
                             socketio.emit('terminal_output', {'data': line + '\n'}, room=sid)
                         buffer = lines[-1]
                 except Exception as e:
-                    print(f"[LOG] 读取输出错误: {e}")
+                    log_with_ip(f"读取终端输出错误: {e}", level='error')
                     break
         if buffer:
             socketio.emit('terminal_output', {'data': buffer}, room=sid)
@@ -1535,16 +1527,12 @@ if MAPLE_TERMINAL_PASSWORD and TERMINAL_PASSWORD_NORMAL and TERMINAL_PASSWORD_SU
 
     @socketio.on('connect_sql_terminal')
     def handle_connect(data):
-        print(f"[LOG] WebSocket 连接请求: {data}")
         if not session.get('admin_logged_in'):
             emit('error', {'msg': '请先登录管理员'})
-            print("[LOG] 拒绝连接：管理员未登录")
             return
-
         user_type = data.get('user_type')
         second_pass = data.get('second_pass')
         db_password = data.get('db_password')
-
         if user_type == 'normal':
             expected = TERMINAL_PASSWORD_NORMAL
             db_user = 'maple_terminal'
@@ -1553,48 +1541,28 @@ if MAPLE_TERMINAL_PASSWORD and TERMINAL_PASSWORD_NORMAL and TERMINAL_PASSWORD_SU
             db_user = 'u0_a167'
         else:
             emit('error', {'msg': '无效的用户类型'})
-            print("[LOG] 拒绝连接：无效用户类型")
             return
-
         if not expected or second_pass != expected:
             emit('error', {'msg': '二次口令错误'})
-            print("[LOG] 拒绝连接：二次口令错误")
             return
-
         if not db_password:
             emit('error', {'msg': '数据库密码不能为空'})
-            print("[LOG] 拒绝连接：数据库密码为空")
             return
-
         env = os.environ.copy()
         env['PGPASSWORD'] = db_password
         master_fd, slave_fd = pty.openpty()
-        # 设置非阻塞模式
         flags = fcntl.fcntl(master_fd, fcntl.F_GETFL)
         fcntl.fcntl(master_fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
-
         cmd = ['psql', '-U', db_user, '-d', 'maple_community', '-h', 'localhost']
-        proc = subprocess.Popen(cmd, stdin=slave_fd, stdout=slave_fd, stderr=slave_fd,
-                                env=env, universal_newlines=False)
-
+        proc = subprocess.Popen(cmd, stdin=slave_fd, stdout=slave_fd, stderr=slave_fd, env=env, universal_newlines=False)
         sid = request.sid
-        processes[sid] = {
-            'proc': proc,
-            'master': master_fd,
-            'slave': slave_fd,
-            'last_activity': time.time()
-        }
-
+        processes[sid] = {'proc': proc, 'master': master_fd, 'slave': slave_fd, 'last_activity': time.time()}
         socketio.start_background_task(target=_read_output, sid=sid, master_fd=master_fd)
-
         def monitor():
             proc.wait()
-            print(f"[LOG] 子进程 {proc.pid} 已退出，返回码: {proc.returncode}")
             socketio.emit('terminal_output', {'data': f'\n[进程退出，返回码: {proc.returncode}]\n'}, room=sid)
             _cleanup(sid)
-
         socketio.start_background_task(target=monitor)
-        print(f"[LOG] 终端已启动，用户类型: {user_type}, 数据库用户: {db_user}, PID: {proc.pid}")
 
     @socketio.on('terminal_input')
     def handle_input(data):
@@ -1606,12 +1574,12 @@ if MAPLE_TERMINAL_PASSWORD and TERMINAL_PASSWORD_NORMAL and TERMINAL_PASSWORD_SU
             try:
                 os.write(proc_info['master'], data['data'].encode())
             except BlockingIOError:
-                print(f"[WARN] 终端写入缓冲区满，丢弃输入: {data['data'].strip()}")
+                log_with_ip(f"终端写入缓冲区满，丢弃输入: {data['data'].strip()}", level='warning')
             except BrokenPipeError:
-                print(f"[ERROR] 终端管道已损坏，断开连接")
+                log_with_ip("终端管道已损坏，断开连接", level='error')
                 _cleanup(sid)
             except Exception as e:
-                print(f"[ERROR] 写入终端失败: {e}")
+                log_with_ip(f"写入终端失败: {e}", level='error')
                 _cleanup(sid)
 
     @socketio.on('heartbeat')
@@ -1622,30 +1590,32 @@ if MAPLE_TERMINAL_PASSWORD and TERMINAL_PASSWORD_NORMAL and TERMINAL_PASSWORD_SU
 
     @socketio.on('disconnect')
     def handle_disconnect():
-        print(f"[LOG] WebSocket 断开连接: {request.sid}")
         _cleanup(request.sid)
 
-    # 会话超时监控线程
     def monitor_sessions():
         while True:
             time.sleep(30)
             now = time.time()
             for sid, info in list(processes.items()):
                 if now - info['last_activity'] > 600:
-                    print(f"[LOG] 会话 {sid} 超时，主动断开")
                     socketio.emit('terminal_output', {'data': '\n[连接超时，已断开]\n'}, room=sid)
+                    log_with_ip(f"终端会话 {sid} 超时断开", level='warning')
                     _cleanup(sid)
-
     socketio.start_background_task(target=monitor_sessions)
 
 else:
-    print("数据库终端功能未启用，请设置所需的环境变量 (MAPLE_TERMINAL_PASSWORD, TERMINAL_PASSWORD_NORMAL, TERMINAL_PASSWORD_SUPER)")
+    log_with_ip("数据库终端功能未启用，请设置所需的环境变量", level='warning')
 
 # ---------- 前端入口 ----------
 @app.route('/maple.html')
 def serve_frontend():
-    print(f"[LOG] /maple.html 被调用，来自 {request.remote_addr}")
     return send_from_directory('.', 'maple.html')
+
+# ========== 全局异常处理器 ==========
+@app.errorhandler(Exception)
+def handle_exception(e):
+    log_with_ip(f"未捕获的异常: {str(e)}\n{traceback.format_exc()}", level='error')
+    return jsonify({"error": "服务器内部错误"}), 500
 
 if __name__ == '__main__':
     socketio.run(app, host='0.0.0.0', port=8083, debug=True)
