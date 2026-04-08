@@ -218,10 +218,10 @@
                     window.location.hostname.startsWith('192.168.') ||
                     window.location.hostname.startsWith('10.') ||
                     window.location.hostname.startsWith('172.');
-    const isBackendHost = window.location.hostname === 'liuhuaichen.serveousercontent.com' || isLocal;
+    const isBackendHost = window.location.hostname === 'maple.serveousercontent.com' || isLocal;
     // 请根据你的实际隧道地址修改 API_BASE！
     // 例如使用 serveo: https://maple.serveo.net
-    const API_BASE = isBackendHost ? '' : 'https://maple.serveo.net';   // 🔧 修改为你的隧道 HTTPS 地址
+    const API_BASE = isBackendHost ? '' : 'https://maple.serveousercontent.com';   // 🔧 修改为你的隧道 HTTPS 地址
     let currentUser = null;
     let adminToken = null;
     function safeLocalStorageGet(key, defaultValue = null) {
