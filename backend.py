@@ -31,7 +31,8 @@ import threading
 import fcntl
 from ipaddress import ip_address, ip_network
 import sys
-import secrets
+import uuid
+from datetime import timedelta
 
 # ========== Flask 应用初始化 ==========
 app = Flask(__name__)
@@ -39,7 +40,7 @@ app = Flask(__name__)
 # CORS 配置：允许前端域名携带凭证
 CORS(app,
      supports_credentials=True,
-     origins=["https://maplelhc.github.io", "https://liuhuaichen.serveousercontent.com"])
+     origins=["https://maplelhc.github.io", "https://liuhuaichen.serveousercontent.com", "https://maple.serveo.net"])
 
 Compress(app)
 
@@ -81,16 +82,78 @@ RAFFLE_COST = 5
 AI_PPT_COST = 5
 DEFAULT_OLLAMA_MODEL = "qwen2.5-coder:1.5b"
 
-# ========== 会话安全配置（使用 Token，不再依赖 Cookie）==========
-# 保留 session 用于普通用户登录，管理员使用 Token
+# ========== Token 存储（简单内存，生产环境建议用 Redis）==========
+admin_tokens = {}  # token -> expiry (timestamp)
+TOKEN_EXPIRE_SECONDS = 3600  # 1小时
+
+def generate_admin_token():
+    token = str(uuid.uuid4())
+    expiry = time.time() + TOKEN_EXPIRE_SECONDS
+    admin_tokens[token] = expiry
+    return token
+
+def verify_admin_token(token):
+    if not token:
+        return False
+    expiry = admin_tokens.get(token)
+    if expiry and expiry > time.time():
+        return True
+    # 清理过期 token
+    if token in admin_tokens:
+        del admin_tokens[token]
+    return False
+
+# 定期清理过期 token 的线程
+def clean_expired_tokens():
+    while True:
+        now = time.time()
+        for token, expiry in list(admin_tokens.items()):
+            if expiry <= now:
+                del admin_tokens[token]
+        time.sleep(300)  # 每5分钟清理一次
+
+threading.Thread(target=clean_expired_tokens, daemon=True).start()
+
+# ========== 会话安全配置（动态适配内网HTTP和外网HTTPS）==========
 app.config.update(
-    SESSION_COOKIE_SECURE=False,
+    SESSION_COOKIE_SECURE=False,      # 基础 False，由 after_request 动态添加
     SESSION_COOKIE_HTTPONLY=True,
-    SESSION_COOKIE_SAMESITE='Lax',
+    SESSION_COOKIE_SAMESITE='Lax',    # 默认 Lax，外网时改为 None
 )
 
-# 存储管理员 Token（简单内存存储，重启后失效）
-admin_tokens = {}  # token -> username
+# ========== 辅助函数：判断是否为私有 IP（内网）==========
+def is_private_ip(ip):
+    try:
+        ip_obj = ip_address(ip)
+        return ip_obj.is_private
+    except ValueError:
+        return False
+
+@app.after_request
+def adjust_cookie_for_request(response):
+    """根据请求协议动态设置 Cookie 的 Secure 和 SameSite 属性"""
+    # 判断是否通过 HTTPS 代理（外网）
+    is_https = request.headers.get('X-Forwarded-Proto') == 'https'
+    origin = request.headers.get('Origin', '')
+    if origin.startswith('https://maplelhc.github.io'):
+        is_https = True
+    
+    new_cookies = []
+    for cookie in response.headers.get_all('Set-Cookie'):
+        if is_https:
+            # 外网 HTTPS：SameSite=None, Secure
+            if 'SameSite=Lax' in cookie:
+                cookie = cookie.replace('SameSite=Lax', 'SameSite=None')
+            if 'Secure' not in cookie:
+                cookie += '; Secure'
+        else:
+            # 内网 HTTP：不能有 Secure，SameSite 应为 Lax
+            cookie = cookie.replace('SameSite=None', 'SameSite=Lax')
+            cookie = cookie.replace('; Secure', '')
+        new_cookies.append(cookie)
+    if new_cookies:
+        response.headers.set('Set-Cookie', new_cookies)
+    return response
 
 # ========== IP 封禁缓存与检查 ==========
 _banned_ips_cache = None
@@ -100,6 +163,7 @@ def get_real_ip():
     """从请求头获取真实客户端 IP（支持反向代理）"""
     forwarded = request.headers.get('X-Forwarded-For')
     if forwarded:
+        # 取第一个 IP（最原始客户端）
         return forwarded.split(',')[0].strip()
     return request.remote_addr
 
@@ -151,6 +215,7 @@ def is_ip_banned(ip_str):
 
 @app.before_request
 def block_banned_ip():
+    # 跳过健康检查和静态资源
     if request.path in ('/ping', '/get_bore_port') or request.path.startswith('/static/'):
         return
     real_ip = get_real_ip()
@@ -186,6 +251,7 @@ def get_db_connection():
 def init_db():
     with get_db_connection() as conn:
         cur = conn.cursor()
+        # 用户表
         cur.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 id SERIAL PRIMARY KEY,
@@ -201,6 +267,7 @@ def init_db():
                 last_ip TEXT
             )
         """)
+        # 其他表...
         cur.execute("""
             CREATE TABLE IF NOT EXISTS messages (
                 id SERIAL PRIMARY KEY,
@@ -305,6 +372,7 @@ def init_db():
             )
         """)
 
+        # 修复缺失列（兼容旧表）
         cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name='users'")
         existing_columns = [row[0] for row in cur.fetchall()]
         if 'is_banned' not in existing_columns:
@@ -323,6 +391,7 @@ def init_db():
         if 'last_checkin' not in [row[0] for row in cur.fetchall()]:
             cur.execute("ALTER TABLE bank_accounts ADD COLUMN last_checkin TIMESTAMP DEFAULT NULL")
 
+        # 授权 maple_user 对 banned_ips 的权限
         cur.execute("GRANT SELECT, INSERT, DELETE ON banned_ips TO maple_user")
         cur.execute("GRANT USAGE, SELECT ON SEQUENCE banned_ips_id_seq TO maple_user")
 
@@ -417,19 +486,48 @@ def require_login(f):
     return decorated
 
 def admin_required(f):
+    """Token 认证装饰器，替代原有的 Session+IP 限制"""
     @wraps(f)
     def decorated(*args, **kwargs):
-        # 优先检查 session（兼容旧方式）
-        if session.get('admin_logged_in'):
-            return f(*args, **kwargs)
-        # 检查 Authorization Bearer Token
+        # 从 Authorization 头获取 token
         auth_header = request.headers.get('Authorization', '')
+        token = None
         if auth_header.startswith('Bearer '):
             token = auth_header[7:]
-            if token in admin_tokens:
-                return f(*args, **kwargs)
-        return jsonify({"error": "请先登录管理员"}), 401
+        if not token:
+            return jsonify({"error": "请先登录管理员"}), 401
+        if not verify_admin_token(token):
+            return jsonify({"error": "Token 无效或已过期，请重新登录"}), 401
+        return f(*args, **kwargs)
     return decorated
+
+# ========== 注册接口（开放）==========
+@app.route('/register', methods=['POST'])
+def register():
+    data = request.json
+    username = data.get('username', '').strip()
+    password = data.get('password', '')
+    nickname = data.get('nickname', username)
+    if not username or not password:
+        return jsonify({"success": False, "error": "用户名和密码不能为空"}), 400
+    if len(username) < 3 or len(username) > 20:
+        return jsonify({"success": False, "error": "用户名长度需为3-20字符"}), 400
+    if len(password) < 4:
+        return jsonify({"success": False, "error": "密码长度至少4位"}), 400
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        # 检查用户名是否已存在
+        cur.execute("SELECT id FROM users WHERE username = %s", (username,))
+        if cur.fetchone():
+            return jsonify({"success": False, "error": "用户名已存在"}), 400
+        hashed = generate_password_hash(password)
+        cur.execute(
+            "INSERT INTO users (username, password, nickname, coins) VALUES (%s, %s, %s, %s)",
+            (username, hashed, nickname, 50)
+        )
+        conn.commit()
+    log_with_ip(f"新用户注册: {username}")
+    return jsonify({"success": True, "message": "注册成功"})
 
 # ========== 管理员接口 ==========
 @app.route('/admin/login', methods=['POST'])
@@ -439,33 +537,27 @@ def admin_login():
     if not password:
         return jsonify({"error": "密码不能为空"}), 400
     if check_password_hash(ADMIN_HASH, password):
-        token = secrets.token_hex(32)
-        admin_tokens[token] = 'admin'
-        log_with_ip("管理员登录成功，生成 Token")
+        token = generate_admin_token()
+        log_with_ip("管理员登录成功，颁发 Token")
         return jsonify({"success": True, "token": token})
     else:
         log_with_ip("管理员登录失败：密码错误", level='warning')
         return jsonify({"error": "密码错误"}), 401
 
 @app.route('/admin/logout', methods=['POST'])
+@admin_required
 def admin_logout():
     auth_header = request.headers.get('Authorization', '')
-    if auth_header.startswith('Bearer '):
-        token = auth_header[7:]
-        admin_tokens.pop(token, None)
-    session.pop('admin_logged_in', None)
+    token = auth_header[7:] if auth_header.startswith('Bearer ') else None
+    if token and token in admin_tokens:
+        del admin_tokens[token]
     log_with_ip("管理员登出")
     return jsonify({"success": True})
 
 @app.route('/admin/status', methods=['GET'])
+@admin_required
 def admin_status():
-    # 检查 session 或 token
-    if session.get('admin_logged_in'):
-        return jsonify({"logged_in": True})
-    auth_header = request.headers.get('Authorization', '')
-    if auth_header.startswith('Bearer ') and auth_header[7:] in admin_tokens:
-        return jsonify({"logged_in": True})
-    return jsonify({"logged_in": False})
+    return jsonify({"logged_in": True})
 
 @app.route('/admin/ban', methods=['POST'])
 @admin_required
@@ -702,14 +794,16 @@ def get_bore_port():
         log_with_ip(f"获取隧道端口失败: {e}", level='error')
         return jsonify({"error": str(e)}), 500
 
-# 临时关闭注册
-@app.route('/register', methods=['POST'])
-def register():
-    return jsonify({"success": False, "error": "注册暂时关闭，请稍后再试或联系管理员"}), 403
-
 @app.route('/login', methods=['POST'])
 def login():
-    data = request.json
+    # 如果 Content-Type 不是 application/json，手动解析
+    if not request.is_json:
+        try:
+            data = json.loads(request.get_data(as_text=True))
+        except:
+            return jsonify({"success": False, "error": "无效的请求格式"}), 400
+    else:
+        data = request.json
     username = data.get('username')
     password = data.get('password')
     client_ip = get_real_ip()
@@ -1491,7 +1585,7 @@ def handle_chat_leave():
         online_users.discard(username)
         log_with_ip(f"[CHAT] {username} 离开聊天室，当前在线: {len(online_users)}")
 
-# ========== WebSocket 数据库终端 ==========
+# ========== WebSocket 数据库终端（Token 认证）==========
 if MAPLE_TERMINAL_PASSWORD and TERMINAL_PASSWORD_NORMAL and TERMINAL_PASSWORD_SUPER:
     processes = {}
 
@@ -1527,9 +1621,12 @@ if MAPLE_TERMINAL_PASSWORD and TERMINAL_PASSWORD_NORMAL and TERMINAL_PASSWORD_SU
 
     @socketio.on('connect_sql_terminal')
     def handle_connect(data):
-        if not session.get('admin_logged_in'):
-            emit('error', {'msg': '请先登录管理员'})
+        # 🔑 使用 Token 认证，而不是 Session
+        token = data.get('token')
+        if not token or not verify_admin_token(token):
+            emit('error', {'msg': '管理员 Token 无效或已过期，请重新登录'})
             return
+
         user_type = data.get('user_type')
         second_pass = data.get('second_pass')
         db_password = data.get('db_password')
