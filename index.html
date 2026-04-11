@@ -219,9 +219,7 @@
                     window.location.hostname.startsWith('10.') ||
                     window.location.hostname.startsWith('172.');
     const isBackendHost = window.location.hostname === 'maple.serveousercontent.com' || isLocal;
-    // 请根据你的实际隧道地址修改 API_BASE！
-    // 例如使用 serveo: https://maple.serveo.net
-    const API_BASE = isBackendHost ? '' : 'https://maple.serveousercontent.com';   // 🔧 修改为你的隧道 HTTPS 地址
+    const API_BASE = isBackendHost ? '' : '';
     let currentUser = null;
     let adminToken = null;
     function safeLocalStorageGet(key, defaultValue = null) {
@@ -244,7 +242,7 @@
     let messages = [];
     let rankList = [];
     let plantData = { emoji: '🌱', name: '翡翠藤', health: 80, water: 60, light: 70, fertilizer: 40, age: 1, stage: '幼苗' };
-    let adminAuthorized = !!adminToken;  // 有 token 则认为已授权，实际有效性由后端验证
+    let adminAuthorized = !!adminToken;
     let toolsAuthorized = { crypto: false, morse: false };
     let isSending = false, isLoggingIn = false;
     let dmFriend = null, dmMessages = [], dmInterval = null;
@@ -505,13 +503,94 @@
         swapLayout(){ const converter=document.querySelector('.baseconverter-card .converter'); if(!converter) return; if(!this.swapped){ converter.insertBefore(this.hexGroup,this.binaryGroup); if(this.swapBtn) this.swapBtn.textContent='恢复'; this.swapped=true; } else{ converter.insertBefore(this.binaryGroup,this.hexGroup); if(this.swapBtn) this.swapBtn.textContent='切换'; this.swapped=false; } }
     }
     function renderToolAuth(toolName){ return `<div class="feature-card" style="text-align:center;"><h3><span>🔒</span> 需要管理员密码</h3><p style="margin:20px 0;">此工具需要输入管理员密码才能使用。</p><input type="password" id="tool-password" placeholder="输入管理员密码" style="width:80%; padding:12px; border-radius:60px; border:2px solid #c0d8b0; font-size:1.2rem; margin-bottom:20px;"><button class="feature-btn" id="tool-auth-btn" style="width:auto; padding:12px 30px;">验证</button></div>`; }
-    function renderLag(){ return `<div class="feature-card"><h3><span>📶</span> 网络延迟检测</h3><div style="text-align:center; padding:30px;"><div id="lag-value" style="font-size:4rem; font-weight:bold; color:#3f5a3f;">-- ms</div><div style="font-size:1.2rem; color:#5f7555; margin:10px 0;">当前网络往返时间</div><div id="lag-status" style="font-size:1.5rem; margin-top:20px;">检测中...</div><div style="margin-top:30px; color:#8f9e85; font-size:1rem;">网络延迟是指从您的设备发送请求到服务器并收到回复所需的时间。<br>如果数值过高或不稳定，可能会影响游戏体验。</div><button id="refresh-port-btn" style="margin-top:20px; padding:10px 20px; background:#fccf7c; border:none; border-radius:40px; font-size:1.2rem; cursor:pointer;">🔄 刷新隧道端口</button><div id="refresh-result" style="margin-top:10px; font-size:1rem; color:#5f7555;"></div></div></div>`; }
+    function renderLag(){ return `<div class="feature-card"><h3><span>📶</span> 网络延迟检测</h3><div style="text-align:center; padding:30px;"><div id="lag-value" style="font-size:4rem; font-weight:bold; color:#3f5a3f;">-- ms</div><div style="font-size:1.2rem; color:#5f7555; margin:10px 0;">当前网络往返时间</div><div id="lag-status" style="font-size:1.5rem; margin-top:20px;">检测中...</div><div style="margin-top:30px; color:#8f9e85; font-size:1rem;">网络延迟是指从您的设备发送请求到服务器并收到回复所需的时间。<br>如果数值过高或不稳定，可能会影响游戏体验。</div></div></div>`; }
     function updateLagDisplay(latency, status='ok'){ const val=document.getElementById('lag-value'), st=document.getElementById('lag-status'); if(!val||!st) return; if(status==='error'){ val.textContent='❌'; st.textContent='连接失败，请检查网络'; val.style.color='#f55'; return; } val.textContent=`${Math.round(latency)} ms`; st.textContent='网络正常'; if(latency<50){ val.style.color='#5fa04b'; st.textContent='网络极佳'; } else if(latency<150){ val.style.color='#ffa500'; st.textContent='网络一般'; } else{ val.style.color='#f55'; st.textContent='网络延迟较高'; } }
     function initGobang(){ gobangBoard=Array(15).fill().map(()=>Array(15).fill(0)); gobangTurn=1; gobangGameOver=false; renderGobangBoard(); if(gobangStatusEl) gobangStatusEl.innerText='轮到你了（黑棋）'; }
     function renderGobangBoard(){ if(!gobangBoardElement) return; gobangBoardElement.innerHTML=''; for(let i=0;i<15;i++){ for(let j=0;j<15;j++){ const cell=document.createElement('div'); cell.className='gobang-cell'; cell.dataset.row=i; cell.dataset.col=j; if(gobangBoard[i][j]===1) cell.classList.add('black'); else if(gobangBoard[i][j]===2) cell.classList.add('white'); cell.addEventListener('click',handleGobangCellClick); gobangBoardElement.appendChild(cell); } } }
     function handleGobangCellClick(e){ if(gobangGameOver) return; if(gobangTurn!==1) return; const row=parseInt(e.currentTarget.dataset.row), col=parseInt(e.currentTarget.dataset.col); if(gobangBoard[row][col]!==0) return; gobangBoard[row][col]=1; renderGobangBoard(); if(checkGobangWin(row,col,1)){ gobangGameOver=true; if(gobangStatusEl) gobangStatusEl.innerText='你赢了！'; return; } gobangTurn=2; if(gobangStatusEl) gobangStatusEl.innerText='AI 思考中...'; setTimeout(()=>aiGobangMove(),100); }
-    function aiGobangMove(){ if(gobangGameOver) return; if(gobangTurn!==2) return; let bestScore=-1, bestMove=null; for(let i=0;i<15;i++){ for(let j=0;j<15;j++){ if(gobangBoard[i][j]!==0) continue; let score=evaluateGobangPosition(i,j,2); if(score>bestScore){ bestScore=score; bestMove=[i,j]; } } } if(bestMove){ const [row,col]=bestMove; gobangBoard[row][col]=2; renderGobangBoard(); if(checkGobangWin(row,col,2)){ gobangGameOver=true; if(gobangStatusEl) gobangStatusEl.innerText='AI 赢了！'; return; } gobangTurn=1; if(gobangStatusEl) gobangStatusEl.innerText='轮到你了（黑棋）'; } else { gobangGameOver=true; if(gobangStatusEl) gobangStatusEl.innerText='平局'; } }
-    function evaluateGobangPosition(r,c,color){ let totalScore=0; for(let [dx,dy] of directions){ let count=1; for(let step=1;step<5;step++){ let nr=r+dx*step, nc=c+dy*step; if(nr<0||nr>=15||nc<0||nc>=15) break; if(gobangBoard[nr][nc]===color) count++; else if(gobangBoard[nr][nc]===0) break; else break; } for(let step=1;step<5;step++){ let nr=r-dx*step, nc=c-dy*step; if(nr<0||nr>=15||nc<0||nc>=15) break; if(gobangBoard[nr][nc]===color) count++; else if(gobangBoard[nr][nc]===0) break; else break; } if(count>=5) totalScore+=10000; else if(count===4) totalScore+=1000; else if(count===3) totalScore+=100; else if(count===2) totalScore+=10; else if(count===1) totalScore+=1; } return totalScore; }
+    // ========== 五子棋 AI（增强版）==========
+    function aiGobangMove() {
+        if (gobangGameOver) return;
+        if (gobangTurn !== 2) return;
+        let bestScore = -Infinity;
+        let bestMove = null;
+        for (let i = 0; i < 15; i++) {
+            for (let j = 0; j < 15; j++) {
+                if (gobangBoard[i][j] !== 0) continue;
+                const aiOffense = evaluatePosition(i, j, 2);
+                const playerDefense = evaluatePosition(i, j, 1);
+                const total = aiOffense + playerDefense * 1.2;
+                if (total > bestScore) {
+                    bestScore = total;
+                    bestMove = [i, j];
+                }
+            }
+        }
+        if (bestMove) {
+            const [row, col] = bestMove;
+            gobangBoard[row][col] = 2;
+            renderGobangBoard();
+            if (checkGobangWin(row, col, 2)) {
+                gobangGameOver = true;
+                if (gobangStatusEl) gobangStatusEl.innerText = 'AI 赢了！';
+                return;
+            }
+            gobangTurn = 1;
+            if (gobangStatusEl) gobangStatusEl.innerText = '轮到你了（黑棋）';
+        } else {
+            gobangGameOver = true;
+            if (gobangStatusEl) gobangStatusEl.innerText = '平局';
+        }
+    }
+    function evaluatePosition(row, col, player) {
+        let totalScore = 0;
+        for (let [dx, dy] of directions) {
+            let count = 1;
+            let openLeft = 0;
+            let openRight = 0;
+            for (let step = 1; step < 5; step++) {
+                const nr = row + dx * step;
+                const nc = col + dy * step;
+                if (nr < 0 || nr >= 15 || nc < 0 || nc >= 15) break;
+                if (gobangBoard[nr][nc] === player) {
+                    count++;
+                } else if (gobangBoard[nr][nc] === 0) {
+                    openRight++;
+                    break;
+                } else {
+                    break;
+                }
+            }
+            for (let step = 1; step < 5; step++) {
+                const nr = row - dx * step;
+                const nc = col - dy * step;
+                if (nr < 0 || nr >= 15 || nc < 0 || nc >= 15) break;
+                if (gobangBoard[nr][nc] === player) {
+                    count++;
+                } else if (gobangBoard[nr][nc] === 0) {
+                    openLeft++;
+                    break;
+                } else {
+                    break;
+                }
+            }
+            const openEnds = openLeft + openRight;
+            if (count >= 5) totalScore += 100000;
+            else if (count === 4) {
+                if (openEnds >= 2) totalScore += 10000;
+                else if (openEnds === 1) totalScore += 1000;
+            } else if (count === 3) {
+                if (openEnds >= 2) totalScore += 500;
+                else if (openEnds === 1) totalScore += 100;
+            } else if (count === 2) {
+                if (openEnds >= 2) totalScore += 50;
+                else if (openEnds === 1) totalScore += 10;
+            } else if (count === 1) {
+                totalScore += 1;
+            }
+        }
+        return totalScore;
+    }
     function checkGobangWin(r,c,color){ for(let [dx,dy] of directions){ let count=1; for(let step=1;step<5;step++){ let nr=r+dx*step, nc=c+dy*step; if(nr<0||nr>=15||nc<0||nc>=15) break; if(gobangBoard[nr][nc]===color) count++; else break; } for(let step=1;step<5;step++){ let nr=r-dx*step, nc=c-dy*step; if(nr<0||nr>=15||nc<0||nc>=15) break; if(gobangBoard[nr][nc]===color) count++; else break; } if(count>=5) return true; } return false; }
     function renderGobang(){ return `<div class="feature-card"><h3><span>🎮</span> 五子棋人机对战</h3><div style="text-align:center;"><div id="gobang-board" style="display:grid; grid-template-columns:repeat(15,30px); gap:0; background-color:#e0c9a5; border:2px solid #8b5a2b; width:fit-content; margin:0 auto;"></div><div style="margin-top:15px;"><button class="feature-btn" id="restart-gobang">重新开始</button></div><div id="gobang-status" style="margin-top:10px; color:#3f5a3f;">轮到你了（黑棋）</div></div></div>`; }
     function initChess(playerColor='w'){ chessGame=new Chess(); chessGameOver=false; chessPlayerColor=playerColor; renderChessBoard(); chessStatusEl.innerText=chessPlayerColor==='w'?'轮到你了（白棋）':'AI 思考中...'; if(chessPlayerColor==='b') setTimeout(()=>aiChessMove(),100); }
@@ -547,7 +626,6 @@
     async function bankRaffle(bankCode){ const res=await apiFetch('/api/bank/raffle',{method:'POST'}); if(res.success){ await bankLoadBalance(bankCode); await bankLoadTransactions(bankCode); alert(`🎉 抽奖成功！花费 ${res.cost} 枫叶币，获得 ${res.reward} 枫叶币，净赚 ${res.net} 枫叶币！当前余额 ${res.balance}`); } else alert(res.error||'抽奖失败'); }
     function renderBankHall(){ const banks=[{code:'liao', name:'廖博文私人银行', rate:'无利息', features:'基础存取转账', hasCheckin:false, hasRaffle:false, bgm:'liao'},{code:'wang', name:'王的银行', rate:'利率1.5%', features:'每日签到利息', hasCheckin:true, hasRaffle:false, bgm:'wang'},{code:'zhanzhang', name:'站长虚无银行', rate:'利率2.5%', features:'签到+抽奖', hasCheckin:true, hasRaffle:true, bgm:'zhanzhang'}]; let html=`<div class="feature-card"><h3>🏦 银行大厅</h3><p style="margin-bottom:20px">请分别登录各银行账户进行操作</p>`; for(let b of banks){ const state=bankStates[b.code]; if(!state.loggedIn){ html+=`<div class="feature-card" style="margin-top:20px"><h4>${b.name} · ${b.rate}</h4><div id="bank-${b.code}-login-register"><div style="margin-bottom:10px;"><button class="feature-btn secondary" id="bank-${b.code}-show-login">登录</button><button class="feature-btn secondary" id="bank-${b.code}-show-register">注册</button></div><div id="bank-${b.code}-login-form" style="display:block;"><div class="feature-row"><span class="feature-label">用户名</span><input type="text" id="bank-${b.code}-login-username" class="feature-input" placeholder="枫叶社区用户名"></div><div class="feature-row"><span class="feature-label">银行密码</span><input type="password" id="bank-${b.code}-login-password" class="feature-input"></div><div class="feature-btns"><button class="feature-btn" id="bank-${b.code}-login-btn">登录</button></div></div><div id="bank-${b.code}-register-form" style="display:none;"><div class="feature-row"><span class="feature-label">用户名</span><input type="text" id="bank-${b.code}-reg-username" class="feature-input" placeholder="枫叶社区用户名"></div><div class="feature-row"><span class="feature-label">银行密码</span><input type="password" id="bank-${b.code}-reg-password" class="feature-input"></div><div class="feature-row"><span class="feature-label">确认密码</span><input type="password" id="bank-${b.code}-reg-password2" class="feature-input"></div><div class="feature-btns"><button class="feature-btn" id="bank-${b.code}-register-btn">注册</button></div></div></div><audio id="bank-${b.code}-bgm" loop><source src="/static/music/${b.bgm}.mp3" type="audio/mpeg"></audio><div><button id="bank-${b.code}-play-bgm" class="feature-btn secondary">🎵 播放音乐</button><button id="bank-${b.code}-stop-bgm" class="feature-btn secondary" style="display:none">⏸️ 暂停</button></div></div>`; } else { html+=`<div class="feature-card" style="margin-top:20px"><h4>${b.name} · ${b.rate}</h4><div style="display:flex; justify-content:space-between; align-items:center"><div class="bank-balance">💰 余额: <span id="bank-${b.code}-balance">${state.balance}</span> 枫叶币</div><div><button class="feature-btn secondary" id="bank-${b.code}-logout-btn">退出登录</button></div></div><div style="margin:15px 0"><div class="feature-row"><span class="feature-label">存款</span><input type="number" id="bank-${b.code}-deposit-amount" class="feature-input" placeholder="金额"><button class="feature-btn" id="bank-${b.code}-deposit-btn">存入</button></div><div class="feature-row"><span class="feature-label">取款</span><input type="number" id="bank-${b.code}-withdraw-amount" class="feature-input" placeholder="金额"><button class="feature-btn" id="bank-${b.code}-withdraw-btn">取出</button></div><div class="feature-row"><span class="feature-label">转账</span><input type="text" id="bank-${b.code}-transfer-to" class="feature-input" placeholder="收款方"><input type="number" id="bank-${b.code}-transfer-amount" class="feature-input" placeholder="金额"><button class="feature-btn" id="bank-${b.code}-transfer-btn">转账</button></div>${b.hasCheckin?`<div class="feature-row"><button class="feature-btn" id="bank-${b.code}-checkin-btn">💰 每日签到（${b.rate==='利率1.5%'?'获得存款1.5%利息':'获得存款2.5%利息'}）</button></div>`:''}${b.hasRaffle?`<div class="feature-row"><button class="feature-btn" id="bank-${b.code}-raffle-btn">🎲 抽奖（花费5枫叶币，得10-20枫叶币）</button></div>`:''}</div><div><h4>交易流水</h4><div id="bank-${b.code}-transactions" class="bank-transaction-list">${state.transactions.map(t=>`<div class="bank-transaction-item"><span>${t.type==='deposit'?'存款':t.type==='withdraw'?'取款':t.type==='transfer_out'?'转出':t.type==='transfer_in'?'转入':t.type==='checkin'?'签到利息':t.type==='raffle'?'抽奖':t.type}</span><span> ${t.amount} 枫叶币</span>${t.target_username?` → ${escapeHtml(t.target_username)}`:''}${t.description?` (${t.description})`:''}<span style="float:right;">${new Date(t.created_at).toLocaleString()}</span></div>`).join('')}</div></div><audio id="bank-${b.code}-bgm" loop><source src="/static/music/${b.bgm}.mp3" type="audio/mpeg"></audio><div><button id="bank-${b.code}-play-bgm" class="feature-btn secondary">🎵 播放音乐</button><button id="bank-${b.code}-stop-bgm" class="feature-btn secondary" style="display:none">⏸️ 暂停</button></div></div>`; } } html+=`</div>`; return html; }
     function attachBankHallEvents(){ const banks=['liao','wang','zhanzhang']; for(let code of banks){ const state=bankStates[code]; if(state.loggedIn){ document.getElementById(`bank-${code}-deposit-btn`)?.addEventListener('click',()=>bankDeposit(code)); document.getElementById(`bank-${code}-withdraw-btn`)?.addEventListener('click',()=>bankWithdraw(code)); document.getElementById(`bank-${code}-transfer-btn`)?.addEventListener('click',()=>bankTransfer(code)); document.getElementById(`bank-${code}-logout-btn`)?.addEventListener('click',()=>bankLogout(code)); if(code==='wang') document.getElementById(`bank-${code}-checkin-btn`)?.addEventListener('click',()=>bankCheckin(code)); if(code==='zhanzhang'){ document.getElementById(`bank-${code}-checkin-btn`)?.addEventListener('click',()=>bankCheckin(code)); document.getElementById(`bank-${code}-raffle-btn`)?.addEventListener('click',()=>bankRaffle(code)); } bankLoadBalance(code); bankLoadTransactions(code); } else { const showLogin=document.getElementById(`bank-${code}-show-login`); const showRegister=document.getElementById(`bank-${code}-show-register`); const loginForm=document.getElementById(`bank-${code}-login-form`); const regForm=document.getElementById(`bank-${code}-register-form`); if(showLogin && showRegister && loginForm && regForm){ showLogin.onclick=()=>{ loginForm.style.display='block'; regForm.style.display='none'; }; showRegister.onclick=()=>{ loginForm.style.display='none'; regForm.style.display='block'; }; } const loginBtn=document.getElementById(`bank-${code}-login-btn`); if(loginBtn) loginBtn.onclick=()=>{ const username=document.getElementById(`bank-${code}-login-username`).value.trim(); const password=document.getElementById(`bank-${code}-login-password`).value; bankLogin(code,username,password); }; const regBtn=document.getElementById(`bank-${code}-register-btn`); if(regBtn) regBtn.onclick=()=>{ const username=document.getElementById(`bank-${code}-reg-username`).value.trim(); const password=document.getElementById(`bank-${code}-reg-password`).value; const pwd2=document.getElementById(`bank-${code}-reg-password2`).value; if(password!==pwd2) return alert('两次密码不一致'); bankRegister(code,username,password); }; } const playBtn=document.getElementById(`bank-${code}-play-bgm`); const stopBtn=document.getElementById(`bank-${code}-stop-bgm`); const audio=document.getElementById(`bank-${code}-bgm`); if(playBtn && stopBtn && audio){ playBtn.onclick=()=>{ audio.play().catch(e=>console.log); playBtn.style.display='none'; stopBtn.style.display='inline-block'; }; stopBtn.onclick=()=>{ audio.pause(); playBtn.style.display='inline-block'; stopBtn.style.display='none'; }; } } }
-    // 数据库终端辅助函数
     function buildVirtualKeyboard() { const container = document.getElementById('db-virtual-keyboard'); if (!container) return; container.innerHTML = ''; for (let row of sqlKeyboardLayout) { const rowDiv = document.createElement('div'); rowDiv.style.display = 'flex'; rowDiv.style.gap = '5px'; rowDiv.style.justifyContent = 'center'; rowDiv.style.marginBottom = '5px'; for (let key of row) { const btn = document.createElement('button'); btn.textContent = key; btn.style.padding = '8px 12px'; btn.style.borderRadius = '30px'; btn.style.border = 'none'; btn.style.background = '#fccf7c'; btn.style.cursor = 'pointer'; btn.onclick = () => handleVirtualKey(key); rowDiv.appendChild(btn); } container.appendChild(rowDiv); } }
     function handleVirtualKey(key) { const input = document.getElementById('db-command-input'); if (!input) return; if (key === 'Backspace') { input.value = input.value.slice(0, -1); } else if (key === 'Space') { input.value += ' '; } else if (key === 'Enter') { sendSqlCommand(); } else if (key === 'Tab') { input.value += '\t'; } else if (key === 'Up' || key === 'Down' || key === 'Left' || key === 'Right') { return; } else { input.value += key; } input.focus(); }
     function sendSqlCommand() { const input = document.getElementById('db-command-input'); const cmd = input.value; if (!cmd.trim() || !sqlSocket || !sqlConnected) return; sqlSocket.emit('terminal_input', { data: cmd + '\n' }); input.value = ''; }
@@ -558,7 +636,6 @@
         outDiv.scrollTop = outDiv.scrollHeight;
     }
     function clearTerminalOutput() { const outDiv = document.getElementById('db-terminal-output'); if (outDiv) outDiv.textContent = ''; }
-    // 🔧 修复：连接数据库终端时携带 Token
     async function connectDatabaseTerminal() {
         if (!adminAuthorized || !adminToken) { alert('请先登录管理员'); return; }
         if (sqlSocket && sqlConnected) { alert('已连接，请先断开'); return; }
@@ -575,7 +652,6 @@
         sqlSocket.on('connect', () => {
             console.log('Socket.IO 已连接');
             if (!connectionRequestSent) {
-                // 🔑 关键修改：发送 token 进行认证
                 sqlSocket.emit('connect_sql_terminal', {
                     token: adminToken,
                     user_type: userType,
@@ -600,7 +676,6 @@
         setTimeout(() => { if (!sqlConnected) { alert('连接超时，请检查密码是否正确'); disconnectDatabaseTerminal(); } }, 5000);
     }
     function disconnectDatabaseTerminal() { if (sqlSocket) { sqlSocket.disconnect(); sqlSocket = null; } sqlConnected = false; const connectPanel = document.getElementById('db-terminal-connect-panel'); const terminalArea = document.getElementById('db-terminal-area'); if (connectPanel) connectPanel.style.display = 'block'; if (terminalArea) terminalArea.style.display = 'none'; const outDiv = document.getElementById('db-terminal-output'); if (outDiv) outDiv.textContent = ''; }
-    // 主渲染
     function renderApp(){ const app=document.getElementById('app'); if(!app) return; if(!currentUser){ app.innerHTML=`<div class="auth-container"><div class="auth-tabs"><button class="auth-tab active" id="login-tab">登录</button><button class="auth-tab" id="register-tab">注册</button></div><div id="auth-form-container"><div class="auth-form"><h2>🍁 登录枫叶社区</h2><input type="text" id="login-username" placeholder="用户名"><input type="password" id="login-password" placeholder="密码"><button id="login-btn">登 录</button></div></div></div>`; attachAuthEvents(); } else { app.innerHTML=renderMain(); attachMainEvents(); if(currentTab==='chat') loadMessages(); if(currentTab==='rank') loadRank(); if(currentTab==='shop') loadProducts(); } }
     function renderMain(){ const coins=currentUser?.coins||0, nickname=currentUser?.nickname||currentUser?.username||''; return `<div class="main-header"><div class="logo-area"><span class="logo-icon">🍁</span><span class="logo-text">枫叶社区</span></div><div class="user-widget"><span class="coin-display">🍁 ${coins}</span><span>👤 ${escapeHtml(nickname)}</span><button class="admin-btn" id="admin-login-btn">🔐 管理员</button><button class="logout-btn" id="logout-btn">登出</button></div></div><div class="tabs-nav"><button class="tab-btn ${currentTab==='garden'?'active':''}" data-tab="garden">🌱 植物园</button><button class="tab-btn ${currentTab==='chat'?'active':''}" data-tab="chat">💬 聊天室</button><button class="tab-btn ${currentTab==='shop'?'active':''}" data-tab="shop">🛒 商店</button><button class="tab-btn ${currentTab==='security'?'active':''}" data-tab="security">👾 黑客模拟器</button><button class="tab-btn ${currentTab==='defense'?'active':''}" data-tab="defense">🛡️ 网络防御</button><button class="tab-btn ${currentTab==='baseconverter'?'active':''}" data-tab="baseconverter">🔢 进制转换</button><button class="tab-btn ${currentTab==='crypto'?'active':''}" data-tab="crypto">🔒 加密解密</button><button class="tab-btn ${currentTab==='morse'?'active':''}" data-tab="morse">📡 摩斯电码</button><button class="tab-btn ${currentTab==='game'?'active':''}" data-tab="game">🎮 消消乐</button><button class="tab-btn ${currentTab==='rank'?'active':''}" data-tab="rank">🏆 财富榜</button><button class="tab-btn ${currentTab==='profile'?'active':''}" data-tab="profile">👤 我的</button><button class="tab-btn ${currentTab==='lag'?'active':''}" data-tab="lag">📶 网络检测</button><button class="tab-btn ${currentTab==='gobang'?'active':''}" data-tab="gobang">🎲 五子棋</button><button class="tab-btn ${currentTab==='chess'?'active':''}" data-tab="chess">♜ 国际象棋</button><button class="tab-btn ${currentTab==='donate'?'active':''}" data-tab="donate">💰 捐赠</button><button class="tab-btn ${currentTab==='lifetest'?'active':''}" data-tab="lifetest">🧩 人生原型</button><button class="tab-btn ${currentTab==='pptist'?'active':''}" data-tab="pptist">🤖 AI PPT</button><button class="tab-btn ${currentTab==='bruteforce'?'active':''}" data-tab="bruteforce">💥 密码猜测演示</button><button class="tab-btn ${currentTab==='bankhall'?'active':''}" data-tab="bankhall">🏦 银行大厅</button></div><div class="tab-content" id="tab-content" style="display:${currentTab!=='pptist'?'block':'none'};">${renderTabContent()}</div><div id="pptist-container" style="display:${currentTab==='pptist'?'block':'none'}; width:100%; height:100%;"><iframe src="/pptist" style="width:100%; height:800px; border:none; border-radius:30px;"></iframe><div style="text-align:center; margin-top:10px; color:#8f9e85;">⚠️ 本工具生成的PPT内容由AI自动生成，仅供参考。</div></div>${showAdminModal?renderAdminModal():''}${dmFriend?renderDMModal():''}
             <div id="admin-login-modal" class="modal-overlay" style="display: none;">
@@ -695,7 +770,7 @@
         if(currentTab==='morse'){ if(toolsAuthorized.morse){ const input=document.getElementById('morse-input'), output=document.getElementById('morse-output'); if(input && output){ async function translateToEnglish(text){ if(/^[a-zA-Z0-9\s.,!?'-]+$/.test(text)) return text; try{ const res=await apiFetch('/api/baidu_translate',{method:'POST',body:JSON.stringify({text})}); return res.translated||text; } catch(e){ console.error(e); return text; } } (async()=>{ const translated=await translateToEnglish(input.value); output.value=textToMorse(translated); })(); const textToMorseBtn=document.getElementById('text-to-morse'); if(textToMorseBtn){ textToMorseBtn.addEventListener('click',async()=>{ const translated=await translateToEnglish(input.value); output.value=textToMorse(translated); }); } const morseToTextBtn=document.getElementById('morse-to-text'); if(morseToTextBtn){ morseToTextBtn.addEventListener('click',()=>{ input.value=morseToText(output.value); }); } const morsePlayBtn=document.getElementById('morse-play'); if(morsePlayBtn){ morsePlayBtn.addEventListener('click',()=>playMorseSound(output.value)); } const morseClearBtn=document.getElementById('morse-clear'); if(morseClearBtn){ morseClearBtn.addEventListener('click',()=>{ input.value=''; output.value=''; }); } input.addEventListener('input',async()=>{ const translated=await translateToEnglish(input.value); output.value=textToMorse(translated); }); output.addEventListener('input',()=>{ input.value=morseToText(output.value); }); } } else { const authBtn=document.getElementById('tool-auth-btn'); if(authBtn){ authBtn.addEventListener('click',async()=>{ const pwd=document.getElementById('tool-password')?document.getElementById('tool-password').value:''; const loginRes = await apiFetch('/admin/login', { method: 'POST', body: JSON.stringify({ password: pwd }) }); if (loginRes.success) { adminToken = loginRes.token; adminAuthorized = true; safeLocalStorageSet('admin_token', adminToken); toolsAuthorized.morse = true; renderApp(); } else { alert('密码错误'); } }); } } } 
         if(currentTab==='game'){ const tryStartGame=(retries=8)=>{ const gameArea=document.getElementById('game-area'); if(gameArea){ wordGame.init(); wordGame.start(); const submit=document.getElementById('submit-word'); if(submit) submit.onclick=()=>wordGame.checkInput(); const newGame=document.getElementById('new-game'); if(newGame) newGame.onclick=()=>wordGame.start(); const restart=document.getElementById('restart-game'); if(restart) restart.onclick=()=>wordGame.start(); const input=document.getElementById('word-input'); if(input){ input.onkeypress=(e)=>{if(e.key==='Enter') wordGame.checkInput();}; input.focus(); } console.log('消消乐启动成功'); } else if(retries>0){ setTimeout(()=>tryStartGame(retries-1),200); } else console.error('无法找到 game-area 元素，消消乐启动失败'); }; tryStartGame(); } 
         const dmModal=document.getElementById('dm-modal'); if(dmModal){ const closeDm=document.getElementById('close-dm'); if(closeDm) closeDm.addEventListener('click',closeDM); const dmSend=document.getElementById('dm-send'); if(dmSend) dmSend.addEventListener('click',sendDM); const dmInput=document.getElementById('dm-input'); if(dmInput) dmInput.addEventListener('keypress',e=>{if(e.key==='Enter') sendDM();}); renderDMMessages(); } 
-        if(currentTab==='lag'){ if(lagInterval) clearInterval(lagInterval); lagInterval=setInterval(async()=>{ const start=performance.now(); try{ const res=await apiFetch('/ping'); if(res && res.pong==='ok') updateLagDisplay(performance.now()-start); else updateLagDisplay(null,'error'); } catch(err){ updateLagDisplay(null,'error'); } },1000); (async()=>{ const start=performance.now(); try{ const res=await apiFetch('/ping'); if(res && res.pong==='ok') updateLagDisplay(performance.now()-start); else updateLagDisplay(null,'error'); } catch(err){ updateLagDisplay(null,'error'); } })(); const refreshBtn=document.getElementById('refresh-port-btn'); const refreshResult=document.getElementById('refresh-result'); if(refreshBtn){ refreshBtn.addEventListener('click',async()=>{ refreshResult.textContent='正在获取最新端口...'; try{ const res=await apiFetch('/get_bore_port'); if(res.port){ const currentUrl=new URL(window.location.href); currentUrl.port=res.port; refreshResult.textContent=`新端口: ${res.port}，正在跳转...`; setTimeout(()=>{ window.location.href=currentUrl.href; },1500); } else refreshResult.textContent='获取端口失败：'+(res.error||'未知错误'); } catch(err){ refreshResult.textContent='请求失败，请稍后重试'; } }); } } else { if(lagInterval){ clearInterval(lagInterval); lagInterval=null; } } 
+        if(currentTab==='lag'){ if(lagInterval) clearInterval(lagInterval); lagInterval=setInterval(async()=>{ const start=performance.now(); try{ const res=await apiFetch('/ping'); if(res && res.pong==='ok') updateLagDisplay(performance.now()-start); else updateLagDisplay(null,'error'); } catch(err){ updateLagDisplay(null,'error'); } },1000); (async()=>{ const start=performance.now(); try{ const res=await apiFetch('/ping'); if(res && res.pong==='ok') updateLagDisplay(performance.now()-start); else updateLagDisplay(null,'error'); } catch(err){ updateLagDisplay(null,'error'); } })(); } else { if(lagInterval){ clearInterval(lagInterval); lagInterval=null; } } 
         if(currentTab==='gobang'){ gobangBoardElement=document.getElementById('gobang-board'); gobangStatusEl=document.getElementById('gobang-status'); initGobang(); document.getElementById('restart-gobang')?.addEventListener('click',initGobang); } 
         if(currentTab==='chess'){ chessBoardElement=document.getElementById('chess-board'); chessStatusEl=document.getElementById('chess-status'); const difficultySelect=document.getElementById('chess-difficulty'); if(difficultySelect) difficultySelect.addEventListener('change',e=>{ chessDifficultyLevel=parseInt(e.target.value); }); document.getElementById('restart-chess-white')?.addEventListener('click',()=>initChess('w')); document.getElementById('restart-chess-black')?.addEventListener('click',()=>initChess('b')); initChess('w'); } 
         if(currentTab==='profile') loadUserCertificates(); 
