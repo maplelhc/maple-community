@@ -219,7 +219,7 @@
                     window.location.hostname.startsWith('10.') ||
                     window.location.hostname.startsWith('172.');
     const isBackendHost = window.location.hostname === 'maple.serveousercontent.com' || isLocal;
-    const API_BASE = isBackendHost ? '' : '';
+    const API_BASE = 'https://maple.serveousercontent.com';
     let currentUser = null;
     let adminToken = null;
     function safeLocalStorageGet(key, defaultValue = null) {
@@ -272,6 +272,11 @@
             const headers = { 'Content-Type': 'application/json' };
             if (useAdminToken && adminToken) {
                 headers['Authorization'] = `Bearer ${adminToken}`;
+            } else {
+                const userToken = safeLocalStorageGet('user_token');
+                if (userToken) {
+                    headers['Authorization'] = `Bearer ${userToken}`;
+                }
             }
             const res = await fetch(API_BASE + url, { 
                 ...options, 
@@ -287,6 +292,14 @@
                     renderApp();
                 }
                 alert('管理员登录已过期，请重新登录');
+                return { success: false, error: 'Unauthorized' };
+            }
+            if (res.status === 401 && !useAdminToken) {
+                safeLocalStorageRemove('user_token');
+                currentUser = null;
+                clearSavedUser();
+                renderApp();
+                alert('登录已过期，请重新登录');
                 return { success: false, error: 'Unauthorized' };
             }
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -314,6 +327,9 @@
             currentUser = data.user;
             currentUser.password = password;
             if (currentUser.plant_data) plantData = currentUser.plant_data;
+            if (data.user.token) {
+                safeLocalStorageSet('user_token', data.user.token);
+            }
             saveUser(currentUser);
             initChatSocket();
             renderApp();
@@ -748,6 +764,7 @@
             adminAuthorized = false;
             safeLocalStorageRemove('admin_token');
         }
+        safeLocalStorageRemove('user_token');
         if (chatSocket && chatConnected) { 
             chatSocket.emit('chat_leave'); 
             chatSocket.disconnect(); 
@@ -779,7 +796,7 @@
         if(currentTab==='bankhall') attachBankHallEvents(); 
         if(showAdminModal) bindAdminModalEvents(); 
     }
-    function bindAdminModalEvents(){ const modal=document.getElementById('admin-modal'); if(!modal) return; modal.addEventListener('click',async(e)=>{ const target=e.target; if(target.matches('#submit-admin-password')||target.matches('#close-admin-modal')) return; if(adminAuthorized){ if(target.matches('#admin-refresh-users')){ await refreshUserList(); return; } if(target.matches('#admin-refresh-products')){ await refreshProductList(); return; } if(target.matches('[data-grant-user]')){ const username=target.dataset.grantUser; const amount=prompt(`向 ${username} 发放多少枫叶币？`,'10'); if(!amount) return; const num=parseInt(amount); if(isNaN(num)||num<=0) return alert('请输入正整数'); const res=await grantCoins(username,num); if(res && res.success){ await refreshCurrentUser(); await loadRank(); await refreshUserList(); } else alert((res&&res.error)||'发放失败'); return; } if(target.matches('[data-deduct-user]')){ const username=target.dataset.deductUser; const amount=prompt(`从 ${username} 扣除多少枫叶币？`,'10'); if(!amount) return; const num=parseInt(amount); if(isNaN(num)||num<=0) return alert('请输入正整数'); const res=await deductCoins(username,num); if(res && res.success){ await refreshCurrentUser(); await loadRank(); await refreshUserList(); } else alert((res&&res.error)||'扣除失败'); return; } if(target.matches('[data-delete-user]')){ const username=target.dataset.deleteUser; if(!confirm(`注销用户 ${username}？`)) return; const res=await deleteUser(username); if(res && res.success){ await loadRank(); if(currentUser && currentUser.username===username){ currentUser=null; clearSavedUser(); showAdminModal=false; renderApp(); } else await refreshUserList(); } else alert((res&&res.error)||'注销失败'); return; } if(target.matches('#add-product-btn')){ const name=document.getElementById('new-product-name')?.value.trim(); const price=parseInt(document.getElementById('new-product-price')?.value); const stock=parseInt(document.getElementById('new-product-stock')?.value); if(!name||isNaN(price)||isNaN(stock)||price<=0||stock<0) return alert('请填写正确信息'); const data=await addProduct(name, price, stock); if(data && data.success){ await loadProducts(); refreshProductList(); } else alert('添加失败'); return; } if(target.matches('[data-delete-product]')){ const productId=target.dataset.deleteProduct; if(!confirm('确定下架该商品？')) return; const res=await deleteProduct(productId); if(res && res.success){ await loadProducts(); refreshProductList(); } else alert((res&&res.error)||'下架失败'); return; } } }); if(adminAuthorized){ setTimeout(()=>{ refreshUserList(); refreshProductList(); },50); } const connectBtn = document.getElementById('db-connect-btn'); if (connectBtn) { connectBtn.onclick = () => { connectDatabaseTerminal(); }; } const sendCmd = document.getElementById('db-send-cmd'); if (sendCmd) sendCmd.onclick = sendSqlCommand; const cmdInput = document.getElementById('db-command-input'); if (cmdInput) cmdInput.onkeypress = (e) => { if (e.key === 'Enter') sendSqlCommand(); }; const disconnectBtn = document.getElementById('db-disconnect-btn'); if (disconnectBtn) disconnectBtn.onclick = disconnectDatabaseTerminal; buildVirtualKeyboard(); const toggleKb = document.getElementById('db-virtual-keyboard-toggle'); const kbDiv = document.getElementById('db-virtual-keyboard'); if (toggleKb && kbDiv) { toggleKb.onclick = () => { sqlVirtualKeyboardVisible = !sqlVirtualKeyboardVisible; kbDiv.style.display = sqlVirtualKeyboardVisible ? 'flex' : 'none'; }; } document.addEventListener('keydown', (e) => { if (e.ctrlKey && e.shiftKey && e.code === 'KeyH') { e.preventDefault(); if (!document.getElementById('admin-modal') || document.getElementById('admin-modal').style.display !== 'flex') return; clearTerminalOutput(); } }); const modalClose = document.getElementById('close-admin-modal'); if (modalClose) { const origClose = modalClose.onclick; modalClose.onclick = () => { disconnectDatabaseTerminal(); if (origClose) origClose(); }; } }
+    function bindAdminModalEvents(){ const modal=document.getElementById('admin-modal'); if(!modal) return; modal.addEventListener('click',async(e)=>{ const target=e.target; if(target.matches('#submit-admin-password')||target.matches('#close-admin-modal')) return; if(adminAuthorized){ if(target.matches('#admin-refresh-users')){ await refreshUserList(); return; } if(target.matches('#admin-refresh-products')){ await refreshProductList(); return; } if(target.matches('[data-grant-user]')){ const username=target.dataset.grantUser; const amount=prompt(`向 ${username} 发放多少枫叶币？`,'10'); if(!amount) return; const num=parseInt(amount); if(isNaN(num)||num<=0) return alert('请输入正整数'); const res=await grantCoins(username,num); if(res && res.success){ await refreshCurrentUser(); await loadRank(); await refreshUserList(); } else alert((res&&res.error)||'发放失败'); return; } if(target.matches('[data-deduct-user]')){ const username=target.dataset.deductUser; const amount=prompt(`从 ${username} 扣除多少枫叶币？`,'10'); if(!amount) return; const num=parseInt(amount); if(isNaN(num)||num<=0) return alert('请输入正整数'); const res=await deductCoins(username,num); if(res && res.success){ await refreshCurrentUser(); await loadRank(); await refreshUserList(); } else alert((res&&res.error)||'扣除失败'); return; } if(target.matches('[data-delete-user]')){ const username=target.dataset.deleteUser; if(!confirm(`注销用户 ${username}？`)) return; const res=await deleteUser(username); if(res && res.success){ await loadRank(); if(currentUser && currentUser.username===username){ currentUser=null; clearSavedUser(); safeLocalStorageRemove('user_token'); showAdminModal=false; renderApp(); } else await refreshUserList(); } else alert((res&&res.error)||'注销失败'); return; } if(target.matches('#add-product-btn')){ const name=document.getElementById('new-product-name')?.value.trim(); const price=parseInt(document.getElementById('new-product-price')?.value); const stock=parseInt(document.getElementById('new-product-stock')?.value); if(!name||isNaN(price)||isNaN(stock)||price<=0||stock<0) return alert('请填写正确信息'); const data=await addProduct(name, price, stock); if(data && data.success){ await loadProducts(); refreshProductList(); } else alert('添加失败'); return; } if(target.matches('[data-delete-product]')){ const productId=target.dataset.deleteProduct; if(!confirm('确定下架该商品？')) return; const res=await deleteProduct(productId); if(res && res.success){ await loadProducts(); refreshProductList(); } else alert((res&&res.error)||'下架失败'); return; } } }); if(adminAuthorized){ setTimeout(()=>{ refreshUserList(); refreshProductList(); },50); } const connectBtn = document.getElementById('db-connect-btn'); if (connectBtn) { connectBtn.onclick = () => { connectDatabaseTerminal(); }; } const sendCmd = document.getElementById('db-send-cmd'); if (sendCmd) sendCmd.onclick = sendSqlCommand; const cmdInput = document.getElementById('db-command-input'); if (cmdInput) cmdInput.onkeypress = (e) => { if (e.key === 'Enter') sendSqlCommand(); }; const disconnectBtn = document.getElementById('db-disconnect-btn'); if (disconnectBtn) disconnectBtn.onclick = disconnectDatabaseTerminal; buildVirtualKeyboard(); const toggleKb = document.getElementById('db-virtual-keyboard-toggle'); const kbDiv = document.getElementById('db-virtual-keyboard'); if (toggleKb && kbDiv) { toggleKb.onclick = () => { sqlVirtualKeyboardVisible = !sqlVirtualKeyboardVisible; kbDiv.style.display = sqlVirtualKeyboardVisible ? 'flex' : 'none'; }; } document.addEventListener('keydown', (e) => { if (e.ctrlKey && e.shiftKey && e.code === 'KeyH') { e.preventDefault(); if (!document.getElementById('admin-modal') || document.getElementById('admin-modal').style.display !== 'flex') return; clearTerminalOutput(); } }); const modalClose = document.getElementById('close-admin-modal'); if (modalClose) { const origClose = modalClose.onclick; modalClose.onclick = () => { disconnectDatabaseTerminal(); if (origClose) origClose(); }; } }
     renderApp();
 </script>
 </body>
