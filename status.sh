@@ -34,7 +34,7 @@ fi
 
 echo "------------------------------"
 echo "后端端口: 8083"
-echo "公网域名: https://liuhuaichen.serveousercontent.com"
+echo "公网域名: https://maple.serveousercontent.com"
 echo "------------------------------"
 
 # 内存使用情况（可选）

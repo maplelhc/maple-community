@@ -57,6 +57,79 @@ CORS(app,
              "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
              "allow_headers": ["Content-Type", "Authorization"],
              "supports_credentials": True
+         },
+         # ⬇️ 新增：覆盖聊天室、登录等公共接口
+         r"/send_message": {
+             "origins": [
+                 "https://maplelhc.github.io",
+                 "https://maple.serveousercontent.com"
+             ],
+             "methods": ["POST", "OPTIONS"],
+             "allow_headers": ["Content-Type"],
+             "supports_credentials": True
+         },
+         r"/get_messages": {
+             "origins": [
+                 "https://maplelhc.github.io",
+                 "https://maple.serveousercontent.com"
+             ],
+             "methods": ["GET", "OPTIONS"],
+             "allow_headers": ["Content-Type"],
+             "supports_credentials": True
+         },
+         r"/login": {
+             "origins": [
+                 "https://maplelhc.github.io",
+                 "https://maple.serveousercontent.com"
+             ],
+             "methods": ["POST", "OPTIONS"],
+             "allow_headers": ["Content-Type"],
+             "supports_credentials": True
+         },
+         r"/register": {
+             "origins": [
+                 "https://maplelhc.github.io",
+                 "https://maple.serveousercontent.com"
+             ],
+             "methods": ["POST", "OPTIONS"],
+             "allow_headers": ["Content-Type"],
+             "supports_credentials": True
+         },
+         r"/rank": {
+             "origins": [
+                 "https://maplelhc.github.io",
+                 "https://maple.serveousercontent.com"
+             ],
+             "methods": ["GET", "OPTIONS"],
+             "allow_headers": ["Content-Type"],
+             "supports_credentials": True
+         },
+         r"/update_plant": {
+             "origins": [
+                 "https://maplelhc.github.io",
+                 "https://maple.serveousercontent.com"
+             ],
+             "methods": ["POST", "OPTIONS"],
+             "allow_headers": ["Content-Type"],
+             "supports_credentials": True
+         },
+         r"/update_user": {
+             "origins": [
+                 "https://maplelhc.github.io",
+                 "https://maple.serveousercontent.com"
+             ],
+             "methods": ["POST", "OPTIONS"],
+             "allow_headers": ["Content-Type"],
+             "supports_credentials": True
+         },
+         r"/get_plant": {
+             "origins": [
+                 "https://maplelhc.github.io",
+                 "https://maple.serveousercontent.com"
+             ],
+             "methods": ["GET", "OPTIONS"],
+             "allow_headers": ["Content-Type"],
+             "supports_credentials": True
          }
      },
      supports_credentials=True
@@ -1369,6 +1442,12 @@ def mock_slides():
     ]
     return jsonify(default_slides)
 
+# ---------- 枫叶农场 静态文件 ----------
+@app.route('/farm')
+@app.route('/farm/<path:filename>')
+def serve_farm(filename='index.html'):
+    return send_from_directory('static/farm', filename)
+
 # ---------- 银行 API ----------
 @app.route('/api/bank/info/<bank_code>', methods=['GET'])
 def bank_info(bank_code):
@@ -1587,7 +1666,13 @@ def bank_raffle():
 def farm_status():
     username = session.get('username')
     if not username:
-        return jsonify({"error": "请先登录"}), 401
+        # 未登录时返回临时测试数据，不报错
+        return jsonify({
+            "username": "guest",
+            "energy": 20,
+            "trees": []
+        })
+    # 已登录则正常查询数据库
     with get_db_connection() as conn:
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute("INSERT INTO farms (username) VALUES (%s) ON CONFLICT (username) DO NOTHING", (username,))
