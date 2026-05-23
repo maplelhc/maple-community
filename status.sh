@@ -1,4 +1,4 @@
-#!/data/data/com.termux/files/usr/bin/bash
+#/bin/bash
 
 echo "=============================="
 echo "      🍁 枫叶社区状态 🍁"
