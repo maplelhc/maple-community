@@ -5,7 +5,7 @@ echo "      🍁 枫叶社区状态 🍁"
 echo "=============================="
 
 # 后端服务
-if pgrep -f "python.*backend.py" > /dev/null; then
+if pgrep -f "python.*backend.py|python.*backend_children.py" > /dev/null; then
     echo "✅ 后端服务 (backend.py) 运行中"
 else
     echo "❌ 后端服务未运行"
